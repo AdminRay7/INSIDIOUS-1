@@ -4,7 +4,8 @@
   "description": "WhatsApp Multi-Device Automation Bot",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "pair": "node pair.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.6.0",
