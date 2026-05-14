@@ -11,23 +11,6 @@ const express = require("express");
 const mongoose = require("mongoose");
 const { fancy } = require("./lib/font");
 const config = require("./config");
-const app = express();
-
-// IMPORTANT: Use PORT from Render, fallback to 3000
-const PORT = process.env.PORT || 3000;
-
-// CORS for web access
-app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Headers', '*');
-    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    if (req.method === 'OPTIONS') {
-        return res.sendStatus(200);
-    }
-    next();
-});
-app.use(express.json());
-app.use(express.static('public'));
 
 const { User } = require('./database/models');
 
@@ -35,6 +18,174 @@ let globalConn = null;
 let isReady = false;
 let retryCount = 0;
 
+// Simple HTTP server for health checks (optional but good for Render)
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+    res.json({ 
+        status: isReady ? 'online' : 'connecting',
+        uptime: process.uptime(),
+        message: 'INSIDIOUS BOT IS RUNNING'
+    });
+});
+
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: isReady ? 'healthy' : 'starting',
+        timestamp: new Date().toISOString()
+    });
+});
+
+// Database connection
+mongoose.connect(config.mongodb, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+    serverSelectionTimeoutMS: 5000,
+}).then(() => console.log("✅ Database Connected")).catch(err => console.log("DB Error:", err.message));
+
+// ============= WHATSAPP CONNECTION =============
+async function startBot() {
+    try {
+        console.log("\n🚀 STARTING INSIDIOUS BOT ON RENDER (Background Worker)...");
+        console.log("⏳ CONNECTING TO WHATSAPP...");
+        
+        const { state, saveCreds } = await useMultiFileAuthState("session");
+        const { version } = await fetchLatestBaileysVersion();
+        
+        const conn = makeWASocket({
+            version,
+            auth: {
+                creds: state.creds,
+                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" })),
+            },
+            logger: pino({ level: "silent" }),
+            browser: ["INSIDIOUS BOT", "Chrome", "120.0.0"],
+            markOnlineOnConnect: true,
+            printQRInTerminal: false,
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: 60000,
+            keepAliveIntervalMs: 30000,
+        });
+        
+        globalConn = conn;
+        
+        // Connection timeout handler
+        const connectionTimeout = setTimeout(() => {
+            if (!isReady) {
+                console.log("⚠️ Connection timeout! Retrying...");
+                conn.end();
+            }
+        }, 90000);
+        
+        conn.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect } = update;
+            
+            if (connection === 'open') {
+                clearTimeout(connectionTimeout);
+                isReady = true;
+                retryCount = 0;
+                console.log("\n✅✅✅ INSIDIOUS IS ONLINE! ✅✅✅\n");
+                console.log("📱 BOT IS READY TO PAIR!");
+                console.log("💡 Use pairing code from terminal or web panel\n");
+                
+                // Try to send message to owner via WhatsApp
+                try {
+                    const ownerJid = config.ownerNumber + '@s.whatsapp.net';
+                    await conn.sendMessage(ownerJid, { 
+                        text: `✅ INSIDIOUS BOT IS ONLINE!\n\nBot is ready to use. Type .menu for commands.`
+                    });
+                    console.log("✅ Owner notified via WhatsApp");
+                } catch(e) {
+                    console.log("⚠️ Owner not notified (number not saved in contacts)");
+                    console.log("💡 Send a message to the bot first to save your number");
+                }
+            }
+            
+            if (connection === 'close') {
+                clearTimeout(connectionTimeout);
+                isReady = false;
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                console.log(`⚠️ Connection closed. Code: ${statusCode}`);
+                
+                if (statusCode === DisconnectReason.loggedOut) {
+                    console.log("❌ Session expired! Deleting session...");
+                    const fs = require('fs-extra');
+                    await fs.remove('./session').catch(() => {});
+                    setTimeout(startBot, 5000);
+                } else if (retryCount < 10) {
+                    retryCount++;
+                    const delay = 10000;
+                    console.log(`🔄 Reconnecting in ${delay/1000}s... (Attempt ${retryCount}/10)`);
+                    setTimeout(startBot, delay);
+                } else {
+                    console.log("❌ Max reconnection attempts reached. Please restart manually.");
+                }
+            }
+        });
+        
+        conn.ev.on('creds.update', saveCreds);
+        
+        // Message handler
+        conn.ev.on('messages.upsert', async (m) => {
+            try {
+                const handler = require('./handler');
+                await handler(conn, m);
+            } catch(e) {
+                console.error("Handler error:", e.message);
+            }
+        });
+        
+        // Anti-call
+        if (config.anticall) {
+            conn.ev.on('call', async (calls) => {
+                for (let call of calls) {
+                    if (call.status === 'offer') {
+                        try {
+                            await conn.rejectCall(call.id, call.from);
+                            console.log(`📞 Rejected call from ${call.from}`);
+                        } catch(e) {}
+                    }
+                }
+            });
+        }
+        
+    } catch(err) {
+        console.error("Start error:", err);
+        if (retryCount < 10) {
+            retryCount++;
+            setTimeout(startBot, 10000);
+        }
+    }
+}
+
+// Start bot
+startBot();
+
+// Start simple web server for health checks (Render needs a port to keep worker alive)
+app.listen(PORT, () => {
+    console.log(`\n✅ HEALTH SERVER RUNNING ON PORT ${PORT}`);
+    console.log("🤖 INSIDIOUS BOT - BACKGROUND WORKER MODE");
+    console.log("⏳ WAITING FOR WHATSAPP CONNECTION...");
+    console.log("💡 The bot will connect automatically. No pairing needed if already connected.\n");
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    console.log('SIGTERM received, shutting down...');
+    if (globalConn) {
+        globalConn.end();
+    }
+    process.exit(0);
+});
+
+process.on('SIGINT', () => {
+    console.log('SIGINT received, shutting down...');
+    if (globalConn) {
+        globalConn.end();
+    }
+    process.exit(0);
+});
 // Database connection
 mongoose.connect(config.mongodb, {
     useNewUrlParser: true,
