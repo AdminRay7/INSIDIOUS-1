@@ -14,6 +14,18 @@ const app = express();
 const PORT = 21079;
 const HOST = '0.0.0.0';
 
+// ========== GLOBAL ERROR HANDLERS (to see why it crashes) ==========
+process.on('uncaughtException', (err) => {
+    console.error('💥 UNCAUGHT EXCEPTION:', err);
+    console.error(err.stack);
+    process.exit(1);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('💥 UNHANDLED REJECTION:', reason);
+    // Don't exit immediately, let the bot try to recover
+});
+// ==================================================================
+
 app.use((req, res, next) => {
     res.header('Access-Control-Allow-Origin', '*');
     res.header('Access-Control-Allow-Headers', '*');
@@ -255,6 +267,220 @@ app.get('/', (req, res) => {
                     const cleanPhone = phone.replace(/[^0-9]/g, '');
                     if (cleanPhone.length < 10 || cleanPhone.length > 15) {
                         showMessage('❌ Invalid phone number (10-15 digits required)', 'error');
+                        return;
+                    }
+                    
+                    const pairBtn = document.getElementById('pairBtn');
+                    const originalText = pairBtn.textContent;
+                    pairBtn.disabled = true;
+                    pairBtn.textContent = '⏳ Generating Code...';
+                    document.getElementById('codeContainer').style.display = 'none';
+                    
+                    try {
+                        const res = await fetch('/pair?num=' + cleanPhone);
+                        const data = await res.json();
+                        
+                        if (data.success) {
+                            document.getElementById('pairingCode').textContent = data.code;
+                            document.getElementById('codeContainer').style.display = 'block';
+                            showMessage('✅ Pairing code generated! Enter it in WhatsApp', 'success');
+                            
+                            setTimeout(() => {
+                                document.getElementById('codeContainer').style.display = 'none';
+                            }, 600000);
+                        } else {
+                            showMessage('❌ ' + (data.error || 'Failed to generate code. Try again.'), 'error');
+                        }
+                    } catch(e) {
+                        showMessage('❌ Connection error. Make sure the bot is running.', 'error');
+                    } finally {
+                        pairBtn.disabled = false;
+                        pairBtn.textContent = originalText;
+                    }
+                }
+                
+                function showMessage(msg, type) {
+                    const msgDiv = document.getElementById('message');
+                    msgDiv.style.color = type === 'error' ? '#f44336' : '#4caf50';
+                    msgDiv.innerHTML = msg;
+                    setTimeout(() => {
+                        msgDiv.innerHTML = '';
+                    }, 5000);
+                }
+                
+                checkBotStatus();
+                checkInterval = setInterval(checkBotStatus, 3000);
+            </script>
+        </body>
+        </html>
+    `);
+});
+
+// API Endpoints
+app.get('/status', (req, res) => {
+    res.json({ 
+        ready: isReady && globalConn !== null,
+        connected: globalConn !== null
+    });
+});
+
+app.get('/pair', async (req, res) => {
+    const num = req.query.num;
+    if (!num) {
+        return res.json({ error: 'Phone number required' });
+    }
+    
+    try {
+        const cleanNum = num.replace(/[^0-9]/g, '');
+        
+        if (!globalConn || !isReady) {
+            return res.json({ error: 'Bot is not connected. Please wait 1 minute.' });
+        }
+        
+        console.log(`\n📱 Generating pairing code for +${cleanNum}...`);
+        const code = await globalConn.requestPairingCode(cleanNum);
+        console.log(`✅ Pairing code: ${code}`);
+        console.log(`📝 Tell user to enter this code in WhatsApp\n`);
+        
+        // Save to database
+        const jid = cleanNum + '@s.whatsapp.net';
+        try {
+            await User.findOneAndUpdate(
+                { jid },
+                { jid, linkedAt: new Date(), isActive: true },
+                { upsert: true }
+            );
+        } catch(e) {}
+        
+        res.json({ success: true, code: code });
+    } catch (err) {
+        console.error('Pairing error:', err.message);
+        res.json({ error: 'Connection failed. Bot may be reconnecting. Try again in 30 seconds.' });
+    }
+});
+
+// Health check
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: isReady ? 'online' : 'connecting',
+        uptime: process.uptime()
+    });
+});
+
+// WhatsApp Connection
+async function startBot() {
+    try {
+        console.log("\n🚀 Starting INSIDIOUS Bot...");
+        console.log("⏳ Connecting to WhatsApp...");
+        
+        const { state, saveCreds } = await useMultiFileAuthState("session");
+        const { version } = await fetchLatestBaileysVersion();
+        
+        const conn = makeWASocket({
+            version,
+            auth: {
+                creds: state.creds,
+                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" })),
+            },
+            logger: pino({ level: "silent" }),
+            browser: ["INSIDIOUS BOT", "Chrome", "120.0.0"],
+            markOnlineOnConnect: true,
+            printQRInTerminal: false,
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: 60000,
+            keepAliveIntervalMs: 30000,
+        });
+        
+        globalConn = conn;
+        
+        conn.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect } = update;
+            
+            if (connection === 'open') {
+                isReady = true;
+                retryCount = 0;
+                console.log("\n✅✅✅ INSIDIOUS IS ONLINE! ✅✅✅\n");
+                console.log(`🌐 Web Panel: http://fi13.bot-hosting.cloud:${PORT}`);
+                console.log("📱 You can now generate pairing codes!\n");
+                
+                // Notify owner
+                try {
+                    const ownerJid = config.ownerNumber + '@s.whatsapp.net';
+                    await conn.sendMessage(ownerJid, { 
+                        text: `✅ INSIDIOUS BOT IS ONLINE!\n🌐 http://fi13.bot-hosting.cloud:${PORT}\n\nUse the web panel to pair new devices.`
+                    });
+                    console.log("✅ Owner notified");
+                } catch(e) {
+                    console.log("⚠️ Owner not notified (number not saved in contacts)");
+                }
+            }
+            
+            if (connection === 'close') {
+                isReady = false;
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                console.log(`⚠️ Connection closed. Code: ${statusCode}`);
+                
+                if (statusCode === DisconnectReason.loggedOut) {
+                    console.log("❌ Session expired! Please delete session folder and restart.");
+                } else if (retryCount < 5) {
+                    retryCount++;
+                    const delay = 10000;
+                    console.log(`🔄 Reconnecting in ${delay/1000}s... (Attempt ${retryCount}/5)`);
+                    setTimeout(startBot, delay);
+                } else {
+                    console.log("❌ Max reconnection attempts reached. Please restart manually.");
+                }
+            }
+        });
+        
+        conn.ev.on('creds.update', saveCreds);
+        
+        // Handle messages – dynamic import to avoid missing file error
+        try {
+            const handler = require('./handler');
+            conn.ev.on('messages.upsert', async (m) => {
+                try {
+                    await handler(conn, m);
+                } catch(e) {
+                    console.error("Handler error:", e.message);
+                }
+            });
+        } catch(e) {
+            console.warn("⚠️ No handler module found – message processing disabled");
+        }
+        
+        // Anti-call
+        if (config.anticall) {
+            conn.ev.on('call', async (calls) => {
+                for (let call of calls) {
+                    if (call.status === 'offer') {
+                        try {
+                            await conn.rejectCall(call.id, call.from);
+                            console.log(`📞 Rejected call from ${call.from}`);
+                        } catch(e) {}
+                    }
+                }
+            });
+        }
+        
+    } catch(err) {
+        console.error("Start error:", err);
+        if (retryCount < 5) {
+            retryCount++;
+            setTimeout(startBot, 10000);
+        }
+    }
+}
+
+// Start everything
+startBot();
+
+app.listen(PORT, HOST, () => {
+    console.log(`\n🌐 Web Dashboard: http://fi13.bot-hosting.cloud:${PORT}`);
+    console.log("📱 PAIRING CODE SYSTEM ACTIVE");
+    console.log("⏳ Waiting for WhatsApp connection...");
+    console.log("💡 Once connected, you'll see 'INSIDIOUS IS ONLINE'\n");
+});
                         return;
                     }
                     
