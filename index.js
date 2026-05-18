@@ -9,7 +9,6 @@ const {
 const pino = require("pino");
 const express = require("express");
 const mongoose = require("mongoose");
-const { fancy } = require("./lib/font");
 const config = require("./config");
 const app = express();
 const PORT = 21079;
@@ -35,6 +34,441 @@ mongoose.connect(config.mongodb).then(() => console.log("✅ Database Connected"
 // Web Page - Pairing Code Only
 app.get('/', (req, res) => {
     res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>INSIDIOUS BOT - Pairing</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+                * {
+                    margin: 0;
+                    padding: 0;
+                    box-sizing: border-box;
+                }
+                body {
+                    background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
+                    font-family: 'Courier New', monospace;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    min-height: 100vh;
+                    margin: 0;
+                    padding: 20px;
+                }
+                .container {
+                    background: rgba(0,0,0,0.95);
+                    border-radius: 20px;
+                    padding: 40px;
+                    max-width: 500px;
+                    width: 100%;
+                    text-align: center;
+                    border: 2px solid #8b0000;
+                    box-shadow: 0 0 30px rgba(139,0,0,0.3);
+                }
+                h1 { 
+                    color: #8b0000; 
+                    font-size: 2.5em; 
+                    margin-bottom: 10px;
+                    text-shadow: 0 0 10px rgba(139,0,0,0.5);
+                }
+                .subtitle {
+                    color: #888;
+                    margin-bottom: 20px;
+                    font-size: 12px;
+                }
+                .status {
+                    margin: 20px 0;
+                    padding: 12px;
+                    border-radius: 10px;
+                    font-size: 14px;
+                }
+                .ready { 
+                    background: #1a3a1a; 
+                    color: #4caf50; 
+                    border-left: 4px solid #4caf50;
+                }
+                .waiting { 
+                    background: #3a2a1a; 
+                    color: #ff9800; 
+                    border-left: 4px solid #ff9800;
+                }
+                .error { 
+                    background: #3a1a1a; 
+                    color: #f44336; 
+                    border-left: 4px solid #f44336;
+                }
+                input {
+                    width: 100%;
+                    padding: 15px;
+                    margin: 10px 0;
+                    background: #2a2a2a;
+                    border: 2px solid #8b0000;
+                    color: white;
+                    border-radius: 10px;
+                    font-size: 16px;
+                    text-align: center;
+                }
+                input:focus {
+                    outline: none;
+                    border-color: #ff0000;
+                }
+                button {
+                    background: linear-gradient(135deg, #8b0000 0%, #cc0000 100%);
+                    color: white;
+                    padding: 15px;
+                    border: none;
+                    border-radius: 10px;
+                    font-size: 18px;
+                    font-weight: bold;
+                    cursor: pointer;
+                    width: 100%;
+                    margin-top: 10px;
+                    transition: all 0.3s;
+                }
+                button:hover:not(:disabled) {
+                    transform: translateY(-2px);
+                    box-shadow: 0 5px 20px rgba(139,0,0,0.4);
+                }
+                button:disabled {
+                    opacity: 0.5;
+                    cursor: not-allowed;
+                }
+                .code-container {
+                    margin-top: 20px;
+                    padding: 20px;
+                    background: #0a0a0a;
+                    border-radius: 15px;
+                    border: 2px dashed #8b0000;
+                    display: none;
+                }
+                .code {
+                    font-size: 42px;
+                    font-weight: bold;
+                    color: #ff4444;
+                    background: #000;
+                    padding: 20px;
+                    border-radius: 10px;
+                    letter-spacing: 8px;
+                    margin: 15px 0;
+                    font-family: monospace;
+                }
+                .footer {
+                    margin-top: 20px;
+                    font-size: 10px;
+                    color: #555;
+                }
+                .info {
+                    background: #1a1a2a;
+                    padding: 10px;
+                    border-radius: 8px;
+                    font-size: 11px;
+                    margin-top: 15px;
+                }
+                .spinner {
+                    display: inline-block;
+                    width: 16px;
+                    height: 16px;
+                    border: 2px solid #fff;
+                    border-top: 2px solid #8b0000;
+                    border-radius: 50%;
+                    animation: spin 1s linear infinite;
+                    margin-right: 8px;
+                    vertical-align: middle;
+                }
+                @keyframes spin {
+                    0% { transform: rotate(0deg); }
+                    100% { transform: rotate(360deg); }
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>🥀 INSIDIOUS</h1>
+                <div class="subtitle">WhatsApp Bot - Pairing System</div>
+                
+                <div id="status" class="status waiting">
+                    <span class="spinner"></span> Bot is starting...
+                </div>
+                
+                <div class="info">
+                    <strong>📱 How to connect your WhatsApp:</strong><br><br>
+                    1️⃣ Enter your phone number below (with country code)<br>
+                    2️⃣ Click "Get Pairing Code"<br>
+                    3️⃣ Open WhatsApp on your phone<br>
+                    4️⃣ Go to Settings → Linked Devices<br>
+                    5️⃣ Tap "Link with Phone Number"<br>
+                    6️⃣ Enter the 8-digit code<br>
+                    7️⃣ Wait 5 seconds - Bot will connect!
+                </div>
+                
+                <input type="text" id="phone" placeholder="254712345678" />
+                <button id="pairBtn" onclick="getPairingCode()" disabled>
+                    🔗 Get Pairing Code
+                </button>
+                
+                <div id="codeContainer" class="code-container">
+                    <div style="color: #8b0000; margin-bottom: 10px;">✦ YOUR PAIRING CODE ✦</div>
+                    <div id="pairingCode" class="code"></div>
+                    <small>Enter this code in WhatsApp → Linked Devices → Link with Phone Number</small>
+                </div>
+                
+                <div id="message" style="margin-top: 15px; font-size: 12px;"></div>
+                <div class="footer">Powered by INSIDIOUS BOT | Developed by STANYTZ</div>
+            </div>
+
+            <script>
+                let checkInterval;
+                
+                async function checkBotStatus() {
+                    try {
+                        const res = await fetch('/status');
+                        const data = await res.json();
+                        const statusDiv = document.getElementById('status');
+                        const pairBtn = document.getElementById('pairBtn');
+                        
+                        if (data.ready) {
+                            statusDiv.innerHTML = '✅ BOT IS READY - Enter your number';
+                            statusDiv.className = 'status ready';
+                            pairBtn.disabled = false;
+                            if (checkInterval) clearInterval(checkInterval);
+                        } else if (data.connected) {
+                            statusDiv.innerHTML = '<span class="spinner"></span> Connecting to WhatsApp... Please wait';
+                            statusDiv.className = 'status waiting';
+                            pairBtn.disabled = true;
+                        } else {
+                            statusDiv.innerHTML = '<span class="spinner"></span> Bot is starting... Please wait 30 seconds';
+                            statusDiv.className = 'status waiting';
+                            pairBtn.disabled = true;
+                        }
+                    } catch(e) {
+                        console.log('Status check failed');
+                    }
+                }
+                
+                async function getPairingCode() {
+                    const phone = document.getElementById('phone').value;
+                    if (!phone) {
+                        showMessage('❌ Please enter your phone number', 'error');
+                        return;
+                    }
+                    
+                    const cleanPhone = phone.replace(/[^0-9]/g, '');
+                    if (cleanPhone.length < 10 || cleanPhone.length > 15) {
+                        showMessage('❌ Invalid phone number (10-15 digits required)', 'error');
+                        return;
+                    }
+                    
+                    const pairBtn = document.getElementById('pairBtn');
+                    const originalText = pairBtn.textContent;
+                    pairBtn.disabled = true;
+                    pairBtn.textContent = '⏳ Generating Code...';
+                    document.getElementById('codeContainer').style.display = 'none';
+                    
+                    try {
+                        const res = await fetch('/pair?num=' + cleanPhone);
+                        const data = await res.json();
+                        
+                        if (data.success) {
+                            document.getElementById('pairingCode').textContent = data.code;
+                            document.getElementById('codeContainer').style.display = 'block';
+                            showMessage('✅ Pairing code generated! Enter it in WhatsApp', 'success');
+                            
+                            setTimeout(() => {
+                                document.getElementById('codeContainer').style.display = 'none';
+                            }, 600000);
+                        } else {
+                            showMessage('❌ ' + (data.error || 'Failed to generate code. Try again.'), 'error');
+                        }
+                    } catch(e) {
+                        showMessage('❌ Connection error. Make sure the bot is running.', 'error');
+                    } finally {
+                        pairBtn.disabled = false;
+                        pairBtn.textContent = originalText;
+                    }
+                }
+                
+                function showMessage(msg, type) {
+                    const msgDiv = document.getElementById('message');
+                    msgDiv.style.color = type === 'error' ? '#f44336' : '#4caf50';
+                    msgDiv.innerHTML = msg;
+                    setTimeout(() => {
+                        msgDiv.innerHTML = '';
+                    }, 5000);
+                }
+                
+                checkBotStatus();
+                checkInterval = setInterval(checkBotStatus, 3000);
+            </script>
+        </body>
+        </html>
+    `);
+});
+
+// API Endpoints
+app.get('/status', (req, res) => {
+    res.json({ 
+        ready: isReady && globalConn !== null,
+        connected: globalConn !== null
+    });
+});
+
+app.get('/pair', async (req, res) => {
+    const num = req.query.num;
+    if (!num) {
+        return res.json({ error: 'Phone number required' });
+    }
+    
+    try {
+        const cleanNum = num.replace(/[^0-9]/g, '');
+        
+        if (!globalConn || !isReady) {
+            return res.json({ error: 'Bot is not connected. Please wait 1 minute.' });
+        }
+        
+        console.log(`\n📱 Generating pairing code for +${cleanNum}...`);
+        const code = await globalConn.requestPairingCode(cleanNum);
+        console.log(`✅ Pairing code: ${code}`);
+        console.log(`📝 Tell user to enter this code in WhatsApp\n`);
+        
+        // Save to database
+        const jid = cleanNum + '@s.whatsapp.net';
+        try {
+            await User.findOneAndUpdate(
+                { jid },
+                { jid, linkedAt: new Date(), isActive: true },
+                { upsert: true }
+            );
+        } catch(e) {}
+        
+        res.json({ success: true, code: code });
+    } catch (err) {
+        console.error('Pairing error:', err.message);
+        res.json({ error: 'Connection failed. Bot may be reconnecting. Try again in 30 seconds.' });
+    }
+});
+
+// Health check
+app.get('/health', (req, res) => {
+    res.json({ 
+        status: isReady ? 'online' : 'connecting',
+        uptime: process.uptime()
+    });
+});
+
+// WhatsApp Connection
+async function startBot() {
+    try {
+        console.log("\n🚀 Starting INSIDIOUS Bot...");
+        console.log("⏳ Connecting to WhatsApp...");
+        
+        const { state, saveCreds } = await useMultiFileAuthState("session");
+        const { version } = await fetchLatestBaileysVersion();
+        
+        const conn = makeWASocket({
+            version,
+            auth: {
+                creds: state.creds,
+                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" })),
+            },
+            logger: pino({ level: "silent" }),
+            browser: ["INSIDIOUS BOT", "Chrome", "120.0.0"],
+            markOnlineOnConnect: true,
+            printQRInTerminal: false,
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: 60000,
+            keepAliveIntervalMs: 30000,
+        });
+        
+        globalConn = conn;
+        
+        conn.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect } = update;
+            
+            if (connection === 'open') {
+                isReady = true;
+                retryCount = 0;
+                console.log("\n✅✅✅ INSIDIOUS IS ONLINE! ✅✅✅\n");
+                console.log(`🌐 Web Panel: http://fi13.bot-hosting.cloud:${PORT}`);
+                console.log("📱 You can now generate pairing codes!\n");
+                
+                // Notify owner
+                try {
+                    const ownerJid = config.ownerNumber + '@s.whatsapp.net';
+                    await conn.sendMessage(ownerJid, { 
+                        text: `✅ INSIDIOUS BOT IS ONLINE!\n🌐 http://fi13.bot-hosting.cloud:${PORT}\n\nUse the web panel to pair new devices.`
+                    });
+                    console.log("✅ Owner notified");
+                } catch(e) {
+                    console.log("⚠️ Owner not notified (number not saved in contacts)");
+                }
+            }
+            
+            if (connection === 'close') {
+                isReady = false;
+                const statusCode = lastDisconnect?.error?.output?.statusCode;
+                console.log(`⚠️ Connection closed. Code: ${statusCode}`);
+                
+                if (statusCode === DisconnectReason.loggedOut) {
+                    console.log("❌ Session expired! Please delete session folder and restart.");
+                } else if (retryCount < 5) {
+                    retryCount++;
+                    const delay = 10000;
+                    console.log(`🔄 Reconnecting in ${delay/1000}s... (Attempt ${retryCount}/5)`);
+                    setTimeout(startBot, delay);
+                } else {
+                    console.log("❌ Max reconnection attempts reached. Please restart manually.");
+                }
+            }
+        });
+        
+        conn.ev.on('creds.update', saveCreds);
+        
+        // Handle messages – dynamic import to avoid missing file error
+        try {
+            const handler = require('./handler');
+            conn.ev.on('messages.upsert', async (m) => {
+                try {
+                    await handler(conn, m);
+                } catch(e) {
+                    console.error("Handler error:", e.message);
+                }
+            });
+        } catch(e) {
+            console.warn("⚠️ No handler module found – message processing disabled");
+        }
+        
+        // Anti-call
+        if (config.anticall) {
+            conn.ev.on('call', async (calls) => {
+                for (let call of calls) {
+                    if (call.status === 'offer') {
+                        try {
+                            await conn.rejectCall(call.id, call.from);
+                            console.log(`📞 Rejected call from ${call.from}`);
+                        } catch(e) {}
+                    }
+                }
+            });
+        }
+        
+    } catch(err) {
+        console.error("Start error:", err);
+        if (retryCount < 5) {
+            retryCount++;
+            setTimeout(startBot, 10000);
+        }
+    }
+}
+
+// Start everything
+startBot();
+
+app.listen(PORT, HOST, () => {
+    console.log(`\n🌐 Web Dashboard: http://fi13.bot-hosting.cloud:${PORT}`);
+    console.log("📱 PAIRING CODE SYSTEM ACTIVE");
+    console.log("⏳ Waiting for WhatsApp connection...");
+    console.log("💡 Once connected, you'll see 'INSIDIOUS IS ONLINE'\n");
+});    res.send(`
         <!DOCTYPE html>
         <html>
         <head>
