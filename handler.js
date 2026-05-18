@@ -5,7 +5,7 @@ const config = require('./config');
 const { fancy } = require('./lib/font');
 const { User, ChannelSubscriber } = require('./database/models');
 
-// Performance caches for Render (memory is limited)
+// Caches
 const commandCache = new Map();
 const reactionCooldown = new Map();
 const commandCooldown = new Map();
@@ -14,7 +14,6 @@ let isProcessingQueue = false;
 
 const COMMAND_COOLDOWN = 2000;
 const REACTION_COOLDOWN = 5000;
-const MAX_QUEUE_SIZE = 100; // Prevent memory issues on Render free tier
 
 // Message queue processor
 async function processMessageQueue() {
@@ -63,25 +62,54 @@ async function processMessage(conn, m) {
         // ========== HANDLE BUTTON INTERACTIONS ==========
         if (msg.message?.buttonsResponseMessage) {
             const buttonId = msg.message.buttonsResponseMessage.selectedButtonId;
+            const from = msg.key.remoteJid;
+            const sender = msg.key.participant || msg.key.remoteJid;
             
             if (buttonId && buttonId.startsWith('menu_')) {
                 try {
-                    const menuPaths = [
-                        path.join(__dirname, 'commands', 'general', 'menu.js'),
-                        path.join(__dirname, 'commands', 'menu.js')
-                    ];
+                    // Check if menu command exists
+                    const menuPath = path.join(__dirname, 'commands', 'general', 'menu.js');
+                    const altMenuPath = path.join(__dirname, 'commands', 'menu.js');
                     
-                    for (const menuPath of menuPaths) {
-                        if (await fs.pathExists(menuPath)) {
-                            const menuCommand = require(menuPath);
-                            if (menuCommand && typeof menuCommand.handleButton === 'function') {
-                                await menuCommand.handleButton(conn, msg, buttonId, { from, sender });
-                            }
-                            break;
-                        }
+                    let menuCommand = null;
+                    if (await fs.pathExists(menuPath)) {
+                        menuCommand = require(menuPath);
+                    } else if (await fs.pathExists(altMenuPath)) {
+                        menuCommand = require(altMenuPath);
+                    }
+                    
+                    if (menuCommand && typeof menuCommand.handleButton === 'function') {
+                        await menuCommand.handleButton(conn, msg, buttonId, { from, sender });
+                    } else {
+                        console.log("Menu button handler not found");
                     }
                 } catch (error) {
-                    console.error("Button handler error:", error.message);
+                    console.error("Button handler error:", error);
+                }
+            }
+            return;
+        }
+
+        // ========== HANDLE LIST RESPONSES ==========
+        if (msg.message?.listResponseMessage) {
+            const selectedItem = msg.message.listResponseMessage.singleSelectReply?.selectedRowId;
+            if (selectedItem && selectedItem.startsWith('menu_')) {
+                try {
+                    const menuPath = path.join(__dirname, 'commands', 'general', 'menu.js');
+                    const altMenuPath = path.join(__dirname, 'commands', 'menu.js');
+                    
+                    let menuCommand = null;
+                    if (await fs.pathExists(menuPath)) {
+                        menuCommand = require(menuPath);
+                    } else if (await fs.pathExists(altMenuPath)) {
+                        menuCommand = require(altMenuPath);
+                    }
+                    
+                    if (menuCommand && typeof menuCommand.handleListResponse === 'function') {
+                        await menuCommand.handleListResponse(conn, msg, selectedItem, { from, sender });
+                    }
+                } catch (error) {
+                    console.error("List response error:", error);
                 }
             }
             return;
@@ -90,9 +118,11 @@ async function processMessage(conn, m) {
         // Skip channel messages
         if (from === config.newsletterJid) return;
 
-        // Auto read (non-blocking for performance)
+        // Auto read
         if (config.autoRead) {
-            conn.readMessages([msg.key]).catch(() => {});
+            try {
+                await conn.readMessages([msg.key]);
+            } catch (error) {}
         }
 
         // Auto react with rate limiting
@@ -101,25 +131,34 @@ async function processMessage(conn, m) {
             const now = Date.now();
             
             if (!lastReact || now - lastReact > REACTION_COOLDOWN) {
-                reactionCooldown.set(sender, now);
-                const reactions = ['🥀', '❤️', '🔥', '⭐', '✨'];
-                const randomReaction = reactions[Math.floor(Math.random() * reactions.length)];
-                conn.sendMessage(from, { react: { text: randomReaction, key: msg.key } }).catch(() => {});
+                try {
+                    const reactions = ['🥀', '❤️', '🔥', '⭐', '✨'];
+                    const randomReaction = reactions[Math.floor(Math.random() * reactions.length)];
+                    await conn.sendMessage(from, { 
+                        react: { text: randomReaction, key: msg.key } 
+                    });
+                    reactionCooldown.set(sender, now);
+                } catch (error) {}
             }
         }
 
-        // Auto save contact (background task)
+        // Auto save contact
         if (config.autoSave && !isOwner && !isGroup) {
             setImmediate(async () => {
                 try {
-                    await User.findOneAndUpdate(
-                        { jid: sender },
-                        { 
-                            $set: { name: pushname, lastActive: new Date() },
-                            $inc: { messageCount: 1 }
-                        },
-                        { upsert: true }
-                    );
+                    let user = await User.findOne({ jid: sender });
+                    if (!user) {
+                        user = new User({
+                            jid: sender,
+                            name: pushname,
+                            lastActive: new Date(),
+                            messageCount: 1
+                        });
+                    } else {
+                        user.messageCount += 1;
+                        user.lastActive = new Date();
+                    }
+                    await user.save();
                 } catch (error) {}
             });
         }
@@ -127,34 +166,35 @@ async function processMessage(conn, m) {
         // Work mode check
         if (config.workMode === 'private' && !isOwner) return;
 
-        // Channel subscription check (with caching for performance)
+        // Channel subscription check
         if (!isOwner && !isGroup) {
-            setImmediate(async () => {
-                try {
-                    let subscriber = await ChannelSubscriber.findOne({ jid: sender, isActive: true });
+            try {
+                let subscriber = await ChannelSubscriber.findOne({ 
+                    jid: sender, 
+                    isActive: true 
+                });
+                
+                if (!subscriber) {
+                    await ChannelSubscriber.create({
+                        jid: sender,
+                        name: pushname,
+                        subscribedAt: new Date(),
+                        isActive: true,
+                        autoFollow: true
+                    });
                     
-                    if (!subscriber) {
-                        await ChannelSubscriber.create({
-                            jid: sender,
-                            name: pushname,
-                            subscribedAt: new Date(),
-                            isActive: true,
-                            autoFollow: true
-                        });
-                        
-                        await conn.sendMessage(from, { 
-                            text: fancy(`╭── • 🥀 • ──╮\n  ${fancy("ᴄʜᴀɴɴᴇʟ ꜱᴜʙꜱᴄʀɪᴘᴛɪᴏɴ")}\n╰── • 🥀 • ──╯\n\n✅ Auto-subscribed!\n🔗 ${config.channelLink}`) 
-                        });
-                    }
-                } catch (error) {}
-            });
+                    await conn.sendMessage(from, { 
+                        text: fancy(`╭── • 🥀 • ──╮\n  ${fancy("ᴄʜᴀɴɴᴇʟ ꜱᴜʙꜱᴄʀɪᴘᴛɪᴏɴ")}\n╰── • 🥀 • ──╯\n\n✅ Auto-subscribed!\n🔗 ${config.channelLink}`) 
+                    });
+                }
+            } catch (error) {}
         }
 
-        // Anti-spam (lightweight check)
+        // Anti-spam
         if (config.antispam && !isOwner) {
             setImmediate(async () => {
                 try {
-                    const user = await User.findOne({ jid: sender });
+                    let user = await User.findOne({ jid: sender });
                     const now = Date.now();
                     
                     if (user) {
@@ -180,40 +220,45 @@ async function processMessage(conn, m) {
             });
         }
 
-        // Group security features (skip if admin)
+        // Group security features
         if (isGroup && !isOwner) {
+            // Check if admin
             let isAdmin = false;
             try {
                 const groupMetadata = await conn.groupMetadata(from);
-                isAdmin = groupMetadata.participants.some(p => 
-                    p.id === sender && (p.admin === 'admin' || p.admin === 'superadmin')
-                );
+                isAdmin = groupMetadata.participants.find(p => p.id === sender)?.admin === 'admin' ||
+                         groupMetadata.participants.find(p => p.id === sender)?.admin === 'superadmin';
             } catch (error) {}
             
             if (!isAdmin) {
                 // Anti-link
-                if (config.antilink && body && /https?:\/\//i.test(body)) {
-                    await conn.sendMessage(from, { delete: msg.key }).catch(() => {});
-                    await conn.sendMessage(from, { 
-                        text: fancy(`⚠️ No links allowed @${sender.split('@')[0]}`),
-                        mentions: [sender]
-                    }).catch(() => {});
-                    return;
+                if (config.antilink && body && body.match(/https?:\/\//gi)) {
+                    try {
+                        await conn.sendMessage(from, { delete: msg.key });
+                        await conn.sendMessage(from, { 
+                            text: fancy(`⚠️ No links allowed @${sender.split('@')[0]}`),
+                            mentions: [sender]
+                        });
+                        return;
+                    } catch (error) {}
                 }
 
                 // Anti-scam
                 if (config.antiscam && body && config.scamWords?.some(w => body.toLowerCase().includes(w))) {
-                    await conn.sendMessage(from, { delete: msg.key }).catch(() => {});
-                    await conn.groupParticipantsUpdate(from, [sender], "remove").catch(() => {});
-                    return;
+                    try {
+                        await conn.sendMessage(from, { delete: msg.key });
+                        await conn.groupParticipantsUpdate(from, [sender], "remove");
+                        return;
+                    } catch (error) {}
                 }
             }
         }
 
-        // AI Chatbot (with timeout for Render)
+        // AI Chatbot
         if (!isCmd && !msg.key.fromMe && body && body.trim().length > 1 && config.aiModel) {
-            // Send typing indicator
-            conn.sendPresenceUpdate('composing', from).catch(() => {});
+            if (config.autoTyping) {
+                conn.sendPresenceUpdate('composing', from).catch(() => {});
+            }
             
             try {
                 const controller = new AbortController();
@@ -239,6 +284,82 @@ async function processMessage(conn, m) {
         if (isCmd) {
             // Command cooldown
             const cooldownKey = `${sender}:${command}`;
+            const lastCommand = commandCooldown.get(cooldownKey);
+            const now = Date.now();
+            
+            if (lastCommand && (now - lastCommand) < COMMAND_COOLDOWN) {
+                return;
+            }
+            commandCooldown.set(cooldownKey, now);
+            
+            if (config.autoTyping) {
+                conn.sendPresenceUpdate('composing', from).catch(() => {});
+            }
+
+            const cmdPath = path.join(__dirname, 'commands');
+            
+            try {
+                if (await fs.pathExists(cmdPath)) {
+                    const categories = await fs.readdir(cmdPath);
+                    let commandFound = false;
+                    
+                    for (const cat of categories) {
+                        const commandFile = path.join(cmdPath, cat, `${command}.js`);
+                        if (await fs.pathExists(commandFile)) {
+                            let cmd = commandCache.get(commandFile);
+                            if (!cmd) {
+                                cmd = require(commandFile);
+                                commandCache.set(commandFile, cmd);
+                            }
+                            
+                            await cmd.execute(conn, msg, args, { 
+                                from, sender, fancy, isOwner, pushname, config 
+                            });
+                            commandFound = true;
+                            break;
+                        }
+                    }
+                    
+                    // Check root commands folder
+                    const rootCommandFile = path.join(cmdPath, `${command}.js`);
+                    if (!commandFound && await fs.pathExists(rootCommandFile)) {
+                        let cmd = commandCache.get(rootCommandFile);
+                        if (!cmd) {
+                            cmd = require(rootCommandFile);
+                            commandCache.set(rootCommandFile, cmd);
+                        }
+                        
+                        await cmd.execute(conn, msg, args, { 
+                            from, sender, fancy, isOwner, pushname, config 
+                        });
+                        commandFound = true;
+                    }
+                    
+                    if (!commandFound) {
+                        await conn.sendMessage(from, { 
+                            text: fancy(`❌ Command "${command}" not found.\n📝 Type ${config.prefix}menu for available commands.`) 
+                        });
+                    }
+                }
+            } catch (err) {
+                console.error("Command error:", err);
+                await conn.sendMessage(from, { 
+                    text: fancy(`❌ Error: ${err.message}`) 
+                });
+            }
+        }
+
+    } catch (err) {
+        console.error("Handler Error:", err.message);
+    }
+}
+
+module.exports = async (conn, m) => {
+    return new Promise((resolve, reject) => {
+        messageQueue.push({ conn, m, resolve, reject });
+        processMessageQueue();
+    });
+};wnKey = `${sender}:${command}`;
             const lastCommand = commandCooldown.get(cooldownKey);
             const now = Date.now();
             
