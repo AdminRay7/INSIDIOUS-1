@@ -5,7 +5,7 @@ module.exports = {
     // 31. BOT METADATA
     botName: "ɪɴꜱɪᴅɪᴏᴜꜱ: ᴛʜᴇ ʟᴀꜱᴛ ᴋᴇʏ",
     ownerName: "ꜱᴛᴀɴʏᴛᴢ",
-    ownerNumber: "255618558502",
+    ownerNumber: "254794376595",
     version: "2.1.1",
     year: "2025",
     updated: "2026",
