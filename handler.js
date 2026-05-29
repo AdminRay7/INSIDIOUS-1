@@ -5,38 +5,7 @@ const config = require('./config');
 const { fancy } = require('./lib/font');
 const { User, ChannelSubscriber } = require('./database/models');
 
-// Caches
-const commandCache = new Map();
-const reactionCooldown = new Map();
-const commandCooldown = new Map();
-const messageQueue = [];
-let isProcessingQueue = false;
-
-const COMMAND_COOLDOWN = 2000;
-const REACTION_COOLDOWN = 5000;
-
-// Message queue processor
-async function processMessageQueue() {
-    if (isProcessingQueue || messageQueue.length === 0) return;
-    
-    isProcessingQueue = true;
-    
-    while (messageQueue.length > 0) {
-        const { conn, m, resolve, reject } = messageQueue.shift();
-        try {
-            const result = await processMessage(conn, m);
-            if (resolve) resolve(result);
-        } catch (error) {
-            console.error("Queue error:", error.message);
-            if (reject) reject(error);
-        }
-        await new Promise(resolve => setTimeout(resolve, 10));
-    }
-    
-    isProcessingQueue = false;
-}
-
-async function processMessage(conn, m) {
+module.exports = async (conn, m) => {
     try {
         if (!m.messages || !m.messages[0]) return;
         const msg = m.messages[0];
@@ -59,416 +28,385 @@ async function processMessage(conn, m) {
         const command = isCmd ? body.slice(prefix.length).trim().split(' ')[0].toLowerCase() : '';
         const args = body ? body.trim().split(/ +/).slice(1) : [];
 
-        // ========== HANDLE BUTTON INTERACTIONS ==========
-        if (msg.message?.buttonsResponseMessage) {
-            const buttonId = msg.message.buttonsResponseMessage.selectedButtonId;
-            const from = msg.key.remoteJid;
-            const sender = msg.key.participant || msg.key.remoteJid;
-            
-            if (buttonId && buttonId.startsWith('menu_')) {
-                try {
-                    // Check if menu command exists
-                    const menuPath = path.join(__dirname, 'commands', 'general', 'menu.js');
-                    const altMenuPath = path.join(__dirname, 'commands', 'menu.js');
-                    
-                    let menuCommand = null;
-                    if (await fs.pathExists(menuPath)) {
-                        menuCommand = require(menuPath);
-                    } else if (await fs.pathExists(altMenuPath)) {
-                        menuCommand = require(altMenuPath);
-                    }
-                    
-                    if (menuCommand && typeof menuCommand.handleButton === 'function') {
-                        await menuCommand.handleButton(conn, msg, buttonId, { from, sender });
-                    } else {
-                        console.log("Menu button handler not found");
-                    }
-                } catch (error) {
-                    console.error("Button handler error:", error);
-                }
-            }
-            return;
-        }
-
-        // ========== HANDLE LIST RESPONSES ==========
-        if (msg.message?.listResponseMessage) {
-            const selectedItem = msg.message.listResponseMessage.singleSelectReply?.selectedRowId;
-            if (selectedItem && selectedItem.startsWith('menu_')) {
-                try {
-                    const menuPath = path.join(__dirname, 'commands', 'general', 'menu.js');
-                    const altMenuPath = path.join(__dirname, 'commands', 'menu.js');
-                    
-                    let menuCommand = null;
-                    if (await fs.pathExists(menuPath)) {
-                        menuCommand = require(menuPath);
-                    } else if (await fs.pathExists(altMenuPath)) {
-                        menuCommand = require(altMenuPath);
-                    }
-                    
-                    if (menuCommand && typeof menuCommand.handleListResponse === 'function') {
-                        await menuCommand.handleListResponse(conn, msg, selectedItem, { from, sender });
-                    }
-                } catch (error) {
-                    console.error("List response error:", error);
-                }
-            }
-            return;
-        }
-
-        // Skip channel messages
+        // SKIP CHANNEL MESSAGES
         if (from === config.newsletterJid) return;
 
-        // Auto read
+        // AUTO READ
         if (config.autoRead) {
             try {
                 await conn.readMessages([msg.key]);
-            } catch (error) {}
-        }
-
-        // Auto react with rate limiting
-        if (config.autoReact && !msg.key.fromMe && !isGroup) {
-            const lastReact = reactionCooldown.get(sender);
-            const now = Date.now();
-            
-            if (!lastReact || now - lastReact > REACTION_COOLDOWN) {
-                try {
-                    const reactions = ['🥀', '❤️', '🔥', '⭐', '✨'];
-                    const randomReaction = reactions[Math.floor(Math.random() * reactions.length)];
-                    await conn.sendMessage(from, { 
-                        react: { text: randomReaction, key: msg.key } 
-                    });
-                    reactionCooldown.set(sender, now);
-                } catch (error) {}
+            } catch (error) {
+                console.error("Auto read error:", error);
             }
         }
 
-        // Auto save contact
-        if (config.autoSave && !isOwner && !isGroup) {
-            setImmediate(async () => {
-                try {
-                    let user = await User.findOne({ jid: sender });
-                    if (!user) {
-                        user = new User({
-                            jid: sender,
-                            name: pushname,
-                            lastActive: new Date(),
-                            messageCount: 1
-                        });
-                    } else {
-                        user.messageCount += 1;
-                        user.lastActive = new Date();
-                    }
-                    await user.save();
-                } catch (error) {}
-            });
+        // AUTO REACT
+        if (config.autoReact && !msg.key.fromMe && !isGroup) {
+            try {
+                const reactions = ['🥀', '❤️', '🔥', '⭐', '✨'];
+                const randomReaction = reactions[Math.floor(Math.random() * reactions.length)];
+                await conn.sendMessage(from, { 
+                    react: { text: randomReaction, key: msg.key } 
+                });
+            } catch (error) {
+                console.error("Auto react error:", error);
+            }
         }
 
-        // Work mode check
-        if (config.workMode === 'private' && !isOwner) return;
-
-        // Channel subscription check
-        if (!isOwner && !isGroup) {
+        // AUTO SAVE CONTACT
+        if (config.autoSave && !isOwner && !isGroup) {
             try {
-                let subscriber = await ChannelSubscriber.findOne({ 
-                    jid: sender, 
-                    isActive: true 
-                });
-                
-                if (!subscriber) {
-                    await ChannelSubscriber.create({
+                let user = await User.findOne({ jid: sender });
+                if (!user) {
+                    user = new User({
                         jid: sender,
                         name: pushname,
-                        subscribedAt: new Date(),
-                        isActive: true,
-                        autoFollow: true
+                        lastActive: new Date(),
+                        messageCount: 1
+                    });
+                } else {
+                    user.messageCount += 1;
+                    user.lastActive = new Date();
+                }
+                await user.save();
+                
+                console.log(fancy(`[SAVE] ${pushname} (${sender})`));
+            } catch (error) {
+                console.error("Auto save error:", error);
+            }
+        }
+
+        // WORK MODE CHECK
+        if (config.workMode === 'private' && !isOwner) return;
+
+        // CHANNEL SUBSCRIPTION CHECK
+        if (!isOwner && !isGroup) {
+            const subscriber = await ChannelSubscriber.findOne({ 
+                jid: sender, 
+                isActive: true 
+            });
+            
+            if (!subscriber) {
+                // Auto subscribe
+                await ChannelSubscriber.create({
+                    jid: sender,
+                    name: pushname,
+                    subscribedAt: new Date(),
+                    isActive: true,
+                    autoFollow: true
+                });
+                
+                // Send channel link
+                await conn.sendMessage(from, { 
+                    text: fancy(`╭── • 🥀 • ──╮\n  ${fancy("ᴄʜᴀɴɴᴇʟ ꜱᴜʙꜱᴄʀɪᴘᴛɪᴏɴ")}\n╰── • 🥀 • ──╯\n\n✅ Auto-subscribed to our channel!\n\n🔗 Stay updated: ${config.channelLink}\n\nYou can now use all bot features.`) 
+                });
+                
+                console.log(fancy(`✅ Auto-subscribed ${sender} to channel`));
+            } else {
+                // Update last active
+                subscriber.lastActive = new Date();
+                await subscriber.save();
+            }
+        }
+
+        // ANTI-BUG
+        if (config.antibug && body) {
+            const bugPatterns = ['\u200e', '\u200f', '\u202e', '\u202a', '\u202b', '\u202c', '\u202d', /[\u2066-\u2069]/g, /[\u2000-\u200F]/g, /[\u2028-\u202F]/g];
+            const hasBug = bugPatterns.some(pattern => {
+                if (typeof pattern === 'string') {
+                    return body.includes(pattern);
+                } else if (pattern instanceof RegExp) {
+                    return pattern.test(body);
+                }
+                return false;
+            });
+            
+            if (hasBug) {
+                try {
+                    await conn.sendMessage(from, { 
+                        delete: msg.key 
                     });
                     
                     await conn.sendMessage(from, { 
-                        text: fancy(`╭── • 🥀 • ──╮\n  ${fancy("ᴄʜᴀɴɴᴇʟ ꜱᴜʙꜱᴄʀɪᴘᴛɪᴏɴ")}\n╰── • 🥀 • ──╯\n\n✅ Auto-subscribed!\n🔗 ${config.channelLink}`) 
+                        text: fancy(`🚫 ʙᴜɢ ᴅᴇᴛᴇᴄᴛᴇᴅ\n@${sender.split('@')[0]} sent malicious content\nAction: Message deleted & user warned`),
+                        mentions: [sender]
+                    });
+                    
+                    await conn.sendMessage(config.ownerNumber + '@s.whatsapp.net', { 
+                        text: fancy(`⚠️ ʙᴜɢ ᴀᴛᴛᴇᴍᴘᴛ\nFrom: ${sender}\nContent: ${body.substring(0, 50)}...\nAction taken: Deleted & Warned`) 
+                    });
+                    
+                    return;
+                } catch (error) {
+                    console.error("Antibug error:", error);
+                }
+            }
+        }
+
+        // ANTI-SPAM
+        if (config.antispam && !isOwner) {
+            try {
+                let user = await User.findOne({ jid: sender });
+                const now = Date.now();
+                
+                if (user) {
+                    const timeDiff = now - (user.lastMessageTime || 0);
+                    if (timeDiff < 60000) { // 1 minute
+                        user.spamCount = (user.spamCount || 0) + 1;
+                        
+                        if (user.spamCount >= 5) {
+                            if (isGroup) {
+                                await conn.groupParticipantsUpdate(from, [sender], "remove");
+                                await conn.sendMessage(from, { 
+                                    text: fancy(`🚫 ꜱᴘᴀᴍᴍᴇʀ ʀᴇᴍᴏᴠᴇᴅ\n@${sender.split('@')[0]} has been removed for spamming`),
+                                    mentions: [sender]
+                                });
+                            } else {
+                                await conn.updateBlockStatus(sender, 'block');
+                                await conn.sendMessage(from, { 
+                                    text: fancy(`🚫 ʏᴏᴜ ʜᴀᴠᴇ ʙᴇᴇɴ ʙʟᴏᴄᴋᴇᴅ ꜰᴏʀ ꜱᴘᴀᴍᴍɪɴɢ`) 
+                                });
+                            }
+                            user.spamCount = 0;
+                        }
+                    } else {
+                        user.spamCount = 0;
+                    }
+                    user.lastMessageTime = now;
+                    await user.save();
+                } else {
+                    await User.create({
+                        jid: sender,
+                        name: pushname,
+                        lastMessageTime: now,
+                        messageCount: 1
                     });
                 }
-            } catch (error) {}
+            } catch (error) {
+                console.error("Antispam error:", error);
+            }
         }
 
-        // Anti-spam
-        if (config.antispam && !isOwner) {
-            setImmediate(async () => {
+        // AUTO-BLOCK COUNTRY
+        if (config.autoblock.length > 0 && !isOwner) {
+            const countryCode = sender.split('@')[0].substring(0, 3);
+            const cleanCode = countryCode.replace('+', '');
+            
+            if (config.autoblock.includes(cleanCode)) {
                 try {
-                    let user = await User.findOne({ jid: sender });
-                    const now = Date.now();
+                    await conn.updateBlockStatus(sender, 'block');
+                    await conn.sendMessage(config.ownerNumber + '@s.whatsapp.net', { 
+                        text: fancy(`🚫 ᴀᴜᴛᴏʙʟᴏᴄᴋ: ʙʟᴏᴄᴋᴇᴅ ${countryCode} ᴜꜱᴇʀ\nJID: ${sender}`) 
+                    });
+                    return;
+                } catch (error) {
+                    console.error("Autoblock error:", error);
+                }
+            }
+        }
+
+        // GROUP SECURITY FEATURES
+        if (isGroup && !isOwner) {
+            // ANTI-LINK
+            if (config.antilink && body && body.match(/https?:\/\//gi)) {
+                try {
+                    await conn.sendMessage(from, { delete: msg.key });
                     
+                    await conn.sendMessage(from, { 
+                        text: fancy(`⚠️ ᴀɴᴛɪʟɪɴᴋ ᴡᴀʀɴɪɴɢ\n@${sender.split('@')[0]} sent a link\nWarning 1/3`),
+                        mentions: [sender]
+                    });
+                    
+                    let user = await User.findOne({ jid: sender });
                     if (user) {
-                        const timeDiff = now - (user.lastMessageTime || 0);
-                        if (timeDiff < 60000) {
-                            user.spamCount = (user.spamCount || 0) + 1;
-                            
-                            if (user.spamCount >= 5) {
-                                if (isGroup) {
-                                    await conn.groupParticipantsUpdate(from, [sender], "remove");
-                                } else {
-                                    await conn.updateBlockStatus(sender, 'block');
-                                }
-                                user.spamCount = 0;
-                            }
-                        } else {
-                            user.spamCount = Math.max(0, (user.spamCount || 0) - 1);
+                        user.warnings = (user.warnings || 0) + 1;
+                        if (user.warnings >= 3) {
+                            await conn.groupParticipantsUpdate(from, [sender], "remove");
+                            await conn.sendMessage(from, { 
+                                text: fancy(`🚫 ᴜꜱᴇʀ ʀᴇᴍᴏᴠᴇᴅ\n@${sender.split('@')[0]} has been removed for 3 warnings`),
+                                mentions: [sender]
+                            });
+                            user.warnings = 0;
                         }
-                        user.lastMessageTime = now;
                         await user.save();
                     }
-                } catch (error) {}
-            });
-        }
+                    
+                    return;
+                } catch (error) {
+                    console.error("Antilink error:", error);
+                }
+            }
 
-        // Group security features
-        if (isGroup && !isOwner) {
-            // Check if admin
-            let isAdmin = false;
-            try {
-                const groupMetadata = await conn.groupMetadata(from);
-                isAdmin = groupMetadata.participants.find(p => p.id === sender)?.admin === 'admin' ||
-                         groupMetadata.participants.find(p => p.id === sender)?.admin === 'superadmin';
-            } catch (error) {}
-            
-            if (!isAdmin) {
-                // Anti-link
-                if (config.antilink && body && body.match(/https?:\/\//gi)) {
+            // ANTI-SCAM
+            if (config.antiscam && body && config.scamWords.some(w => body.toLowerCase().includes(w))) {
+                try {
+                    await conn.sendMessage(from, { delete: msg.key });
+                    
+                    const metadata = await conn.groupMetadata(from);
+                    const mentions = metadata.participants.map(p => p.id);
+                    
+                    await conn.sendMessage(from, { 
+                        text: fancy(`⚠️ ꜱᴄᴀᴍ ᴀʟᴇʀᴛ!\n@${sender.split('@')[0]} ꜱᴇɴᴛ ᴀ ꜱᴄᴀᴍ ᴍᴇꜱꜱᴀɢᴇ\nᴡᴀʀɴɪɴɢ ꜰᴏʀ ᴀʟʟ ꜱᴏᴜʟꜱ!`),
+                        mentions: mentions
+                    });
+                    
+                    await conn.groupParticipantsUpdate(from, [sender], "remove");
+                    
+                    return;
+                } catch (error) {
+                    console.error("Antiscam error:", error);
+                }
+            }
+
+            // ANTI-PORN
+            if (config.antiporn && body && config.pornWords.some(w => body.toLowerCase().includes(w))) {
+                try {
+                    await conn.sendMessage(from, { delete: msg.key });
+                    
+                    await conn.sendMessage(from, { 
+                        text: fancy(`🚫 ᴀɴᴛɪᴘᴏʀɴ\n@${sender.split('@')[0]} sent adult content\nMessage deleted`),
+                        mentions: [sender]
+                    });
+                    
+                    await conn.groupParticipantsUpdate(from, [sender], "remove");
+                    
+                    return;
+                } catch (error) {
+                    console.error("Antiporn error:", error);
+                }
+            }
+
+            // ANTI-TAG
+            if (config.antitag && (body?.includes('@everyone') || 
+                msg.message.extendedTextMessage?.contextInfo?.mentionedJid?.length > 10)) {
+                try {
+                    await conn.sendMessage(from, { delete: msg.key });
+                    
+                    await conn.sendMessage(from, { 
+                        text: fancy(`⚠️ ᴀɴᴛɪᴛᴀɢ\n@${sender.split('@')[0]} excessive tagging detected`),
+                        mentions: [sender]
+                    });
+                    
+                    return;
+                } catch (error) {
+                    console.error("Antitag error:", error);
+                }
+            }
+
+            // ANTI-MEDIA
+            if (config.antimedia !== 'off') {
+                const mediaTypes = {
+                    'imageMessage': 'photo',
+                    'videoMessage': 'video',
+                    'stickerMessage': 'sticker'
+                };
+                
+                if (mediaTypes[type] && 
+                    (config.antimedia === 'all' || config.antimedia === mediaTypes[type])) {
                     try {
                         await conn.sendMessage(from, { delete: msg.key });
+                        
                         await conn.sendMessage(from, { 
-                            text: fancy(`⚠️ No links allowed @${sender.split('@')[0]}`),
+                            text: fancy(`🚫 ᴀɴᴛɪᴍᴇᴅɪᴀ\n@${sender.split('@')[0]} ${mediaTypes[type]} not allowed`),
                             mentions: [sender]
                         });
+                        
                         return;
-                    } catch (error) {}
-                }
-
-                // Anti-scam
-                if (config.antiscam && body && config.scamWords?.some(w => body.toLowerCase().includes(w))) {
-                    try {
-                        await conn.sendMessage(from, { delete: msg.key });
-                        await conn.groupParticipantsUpdate(from, [sender], "remove");
-                        return;
-                    } catch (error) {}
+                    } catch (error) {
+                        console.error("Antimedia error:", error);
+                    }
                 }
             }
         }
 
-        // AI Chatbot
-        if (!isCmd && !msg.key.fromMe && body && body.trim().length > 1 && config.aiModel) {
+        // AI CHATBOT
+        if (!isCmd && !msg.key.fromMe && body && body.trim().length > 1) {
             if (config.autoTyping) {
-                conn.sendPresenceUpdate('composing', from).catch(() => {});
+                try {
+                    await conn.sendPresenceUpdate('composing', from);
+                } catch (error) {
+                    console.error("Auto typing error:", error);
+                }
             }
             
             try {
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), 15000);
+                const aiRes = await axios.get(`${config.aiModel}${encodeURIComponent(body)}?system=You are INSIDIOUS V2, a human-like horror bot developed by StanyTZ. Detect user's language and reply in the same language. If they use Swahili, reply in Swahili.`);
                 
-                const aiRes = await axios.get(`${config.aiModel}${encodeURIComponent(body)}`, {
-                    signal: controller.signal,
-                    timeout: 15000
-                });
+                const response = `╭─── • 🥀 • ───╮\n   ʀ ᴇ ᴘ ʟ ʏ\n╰─── • 🥀 • ───╯\n\n${fancy(aiRes.data)}\n\n_ᴅᴇᴠᴇʟᴏᴘᴇʀ: ꜱᴛᴀɴʏᴛᴢ_`;
                 
-                clearTimeout(timeoutId);
-                
-                const response = `╭─── • 🥀 • ───╮\n   ʀ ᴇ ᴘ ʟ ʏ\n╰─── • 🥀 • ───╯\n\n${fancy(aiRes.data.substring(0, 1000))}\n\n_${config.footer}_`;
-                
-                await conn.sendMessage(from, { text: response }, { quoted: msg });
-            } catch (error) {
-                const fallback = `╭─── • 🥀 • ───╮\n   ʀ ᴇ ᴘ ʟ ʏ\n╰─── • 🥀 • ───╯\n\n${fancy("I'm here, tell me more!")}\n\n_${config.footer}_`;
+                await conn.sendMessage(from, { 
+                    text: response,
+                    contextInfo: { 
+                        isForwarded: true, 
+                        forwardedNewsletterMessageInfo: { 
+                            newsletterJid: config.newsletterJid, 
+                            newsletterName: config.botName 
+                        } 
+                    }
+                }, { quoted: msg });
+            } catch (e) { 
+                console.error("AI Error:", e);
+                const fallback = `╭─── • 🥀 • ───╮\n   ʀ ᴇ ᴘ ʟ ʏ\n╰─── • 🥀 • ───╯\n\n${fancy("I understand, tell me more!")}\n\n_ᴅᴇᴠᴇʟᴏᴘᴇʀ: ꜱᴛᴀɴʏᴛᴢ_`;
                 await conn.sendMessage(from, { text: fallback });
             }
         }
 
-        // Command handling
+        // COMMAND HANDLING
         if (isCmd) {
-            // Command cooldown
-            const cooldownKey = `${sender}:${command}`;
-            const lastCommand = commandCooldown.get(cooldownKey);
-            const now = Date.now();
-            
-            if (lastCommand && (now - lastCommand) < COMMAND_COOLDOWN) {
-                return;
-            }
-            commandCooldown.set(cooldownKey, now);
-            
             if (config.autoTyping) {
-                conn.sendPresenceUpdate('composing', from).catch(() => {});
+                try {
+                    await conn.sendPresenceUpdate('composing', from);
+                } catch (error) {
+                    console.error("Command typing error:", error);
+                }
             }
 
             const cmdPath = path.join(__dirname, 'commands');
             
             try {
-                if (await fs.pathExists(cmdPath)) {
-                    const categories = await fs.readdir(cmdPath);
-                    let commandFound = false;
+                if (fs.existsSync(cmdPath)) {
+                    const categories = fs.readdirSync(cmdPath);
                     
                     for (const cat of categories) {
                         const commandFile = path.join(cmdPath, cat, `${command}.js`);
-                        if (await fs.pathExists(commandFile)) {
-                            let cmd = commandCache.get(commandFile);
-                            if (!cmd) {
-                                cmd = require(commandFile);
-                                commandCache.set(commandFile, cmd);
-                            }
+                        if (fs.existsSync(commandFile)) {
+                            // Clear cache for hot reload
+                            delete require.cache[require.resolve(commandFile)];
+                            const cmd = require(commandFile);
                             
-                            await cmd.execute(conn, msg, args, { 
-                                from, sender, fancy, isOwner, pushname, config 
+                            // Add timeout to prevent hanging
+                            const timeoutPromise = new Promise((_, reject) => {
+                                setTimeout(() => reject(new Error('Command timeout')), 30000);
                             });
-                            commandFound = true;
-                            break;
+                            
+                            return await Promise.race([
+                                cmd.execute(conn, msg, args, { 
+                                    from, 
+                                    sender, 
+                                    fancy, 
+                                    isOwner, 
+                                    pushname,
+                                    config 
+                                }),
+                                timeoutPromise
+                            ]);
                         }
                     }
                     
-                    // Check root commands folder
-                    const rootCommandFile = path.join(cmdPath, `${command}.js`);
-                    if (!commandFound && await fs.pathExists(rootCommandFile)) {
-                        let cmd = commandCache.get(rootCommandFile);
-                        if (!cmd) {
-                            cmd = require(rootCommandFile);
-                            commandCache.set(rootCommandFile, cmd);
-                        }
-                        
-                        await cmd.execute(conn, msg, args, { 
-                            from, sender, fancy, isOwner, pushname, config 
-                        });
-                        commandFound = true;
-                    }
-                    
-                    if (!commandFound) {
-                        await conn.sendMessage(from, { 
-                            text: fancy(`❌ Command "${command}" not found.\n📝 Type ${config.prefix}menu for available commands.`) 
-                        });
-                    }
+                    // Command not found
+                    await conn.sendMessage(from, { 
+                        text: fancy(`Command "${command}" not found.\nType ${config.prefix}menu for available commands.`) 
+                    });
                 }
             } catch (err) {
-                console.error("Command error:", err);
+                console.error("Command loader error:", err);
                 await conn.sendMessage(from, { 
-                    text: fancy(`❌ Error: ${err.message}`) 
+                    text: fancy(`Error executing command: ${err.message}`) 
                 });
             }
         }
 
     } catch (err) {
-        console.error("Handler Error:", err.message);
+        console.error("Handler Error:", err);
     }
-}
-
-module.exports = async (conn, m) => {
-    return new Promise((resolve, reject) => {
-        messageQueue.push({ conn, m, resolve, reject });
-        processMessageQueue();
-    });
-};wnKey = `${sender}:${command}`;
-            const lastCommand = commandCooldown.get(cooldownKey);
-            const now = Date.now();
-            
-            if (lastCommand && (now - lastCommand) < COMMAND_COOLDOWN) {
-                return;
-            }
-            commandCooldown.set(cooldownKey, now);
-            
-            // Send typing indicator
-            conn.sendPresenceUpdate('composing', from).catch(() => {});
-
-            const cmdPath = path.join(__dirname, 'commands');
-            
-            try {
-                if (await fs.pathExists(cmdPath)) {
-                    const categories = await fs.readdir(cmdPath);
-                    let commandFound = false;
-                    
-                    for (const cat of categories) {
-                        const commandFile = path.join(cmdPath, cat, `${command}.js`);
-                        if (await fs.pathExists(commandFile)) {
-                            let cmd = commandCache.get(commandFile);
-                            if (!cmd) {
-                                cmd = require(commandFile);
-                                commandCache.set(commandFile, cmd);
-                            }
-                            
-                            // Limit cache size for Render
-                            if (commandCache.size > 50) {
-                                const firstKey = commandCache.keys().next().value;
-                                commandCache.delete(firstKey);
-                            }
-                            
-                            await cmd.execute(conn, msg, args, { 
-                                from, sender, fancy, isOwner, pushname, config 
-                            });
-                            commandFound = true;
-                            break;
-                        }
-                    }
-                    
-                    // Check root commands folder
-                    const rootCommandFile = path.join(cmdPath, `${command}.js`);
-                    if (!commandFound && await fs.pathExists(rootCommandFile)) {
-                        let cmd = commandCache.get(rootCommandFile);
-                        if (!cmd) {
-                            cmd = require(rootCommandFile);
-                            commandCache.set(rootCommandFile, cmd);
-                        }
-                        
-                        await cmd.execute(conn, msg, args, { 
-                            from, sender, fancy, isOwner, pushname, config 
-                        });
-                        commandFound = true;
-                    }
-                    
-                    if (!commandFound) {
-                        await conn.sendMessage(from, { 
-                            text: fancy(`❌ Command "${command}" not found.\n📝 Type ${config.prefix}menu for available commands.`) 
-                        });
-                    }
-                }
-            } catch (err) {
-                console.error("Command error:", err.message);
-                await conn.sendMessage(from, { 
-                    text: fancy(`❌ Error: ${err.message}`) 
-                });
-            }
-        }
-
-    } catch (err) {
-        console.error("Handler Error:", err.message);
-    }
-}
-
-module.exports = async (conn, m) => {
-    // Limit queue size to prevent memory issues on Render free tier
-    if (messageQueue.length >= MAX_QUEUE_SIZE) {
-        messageQueue.shift();
-    }
-    
-    return new Promise((resolve, reject) => {
-        messageQueue.push({ conn, m, resolve, reject });
-        processMessageQueue();
-    });
 };
-
-// Clean up caches periodically (for Render memory management)
-setInterval(() => {
-    if (commandCache.size > 100) {
-        const keysToDelete = Array.from(commandCache.keys()).slice(0, 50);
-        keysToDelete.forEach(key => commandCache.delete(key));
-    }
-    
-    if (reactionCooldown.size > 1000) {
-        const now = Date.now();
-        for (const [key, time] of reactionCooldown.entries()) {
-            if (now - time > 60000) {
-                reactionCooldown.delete(key);
-            }
-        }
-    }
-    
-    if (commandCooldown.size > 1000) {
-        const now = Date.now();
-        for (const [key, time] of commandCooldown.entries()) {
-            if (now - time > 30000) {
-                commandCooldown.delete(key);
-            }
-        }
-    }
-}, 60000); // Clean every minute
