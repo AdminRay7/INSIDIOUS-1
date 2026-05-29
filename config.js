@@ -1,7 +1,7 @@
 module.exports = {
     // Bot Info
     botName: "INSIDIOUS",
-    ownerNumber: "2557xxxxxx", // REPLACE WITH YOUR NUMBER
+    ownerNumber: "254794376265", // Your WhatsApp number
     ownerName: "StanyTZ",
     version: "2.1.1",
     footer: "INSIDIOUS V2",
@@ -10,8 +10,8 @@ module.exports = {
     // Session
     sessionName: "insidious_session",
     
-    // Database - USE THIS EXACT FORMAT
-    mongodb: "mongodb+srv://admin:YOUR_PASSWORD@cluster0.iylgadk.mongodb.net/insidious",
+    // Database - Hardcoded with your credentials
+    mongodb: "mongodb+srv://admin:ryan.3063@cluster0.iylgadk.mongodb.net/insidious?retryWrites=true&w=majority",
     
     // AI
     aiModel: "https://ai.servietsky1.workers.chat/?message=",
