@@ -1,11 +1,10 @@
 {
   "name": "insidious-bot",
   "version": "2.1.1",
-  "description": "INSIDIOUS WhatsApp Bot with Web Pairing",
+  "description": "INSIDIOUS WhatsApp Bot",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "nodemon index.js"
+    "start": "node index.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.0",
@@ -14,9 +13,7 @@
     "fs-extra": "^11.0.0",
     "mongoose": "^8.0.0",
     "node-cron": "^3.0.0",
-    "pino": "^8.0.0",
-    "dotenv": "^16.0.0",
-    "qrcode-terminal": "^0.12.0"
+    "pino": "^8.0.0"
   },
   "engines": {
     "node": ">=18.0.0"
