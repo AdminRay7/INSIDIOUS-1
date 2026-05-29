@@ -9,2679 +9,362 @@ const {
 const pino = require("pino");
 const express = require("express");
 const mongoose = require("mongoose");
+const path = require("path");
+const axios = require("axios");
+const cron = require("node-cron");
+const fs = require("fs-extra");
+const { fancy } = require("./lib/font");
 const config = require("./config");
 const app = express();
-const PORT = 21079;
-const HOST = '0.0.0.0';
+const PORT = process.env.PORT || 3000;
 
-// ========== GLOBAL ERROR HANDLERS (to see why it crashes) ==========
-process.on('uncaughtException', (err) => {
-    console.error('💥 UNCAUGHT EXCEPTION:', err);
-    console.error(err.stack);
-    process.exit(1);
-});
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('💥 UNHANDLED REJECTION:', reason);
-    // Don't exit immediately, let the bot try to recover
-});
-// ==================================================================
+// IMPORT DATABASE MODELS
+const { User, Group, ChannelSubscriber } = require('./database/models');
 
-app.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Headers', '*');
-    res.header('Access-Control-Allow-Methods', '*');
-    next();
-});
-app.use(express.json());
+/**
+ * INSIDIOUS: THE LAST KEY V2.1.1
+ * COMPLETE ENTRY POINT WITH ALL FEATURES
+ */
 
-const { User } = require('./database/models');
+// DATABASE CONNECTION
+mongoose.connect(config.mongodb, { useNewUrlParser: true, useUnifiedTopology: true })
+    .then(() => console.log(fancy("🥀 database connected: insidious is eternal.")))
+    .catch(err => console.error("DB Connection Error:", err));
 
-let globalConn = null;
-let isReady = false;
-let retryCount = 0;
-
-// Database
-mongoose.connect(config.mongodb).then(() => console.log("✅ Database Connected")).catch(e => console.log("DB Error:", e.message));
-
-// Web Page - Pairing Code Only
+// WEB PAIRING DASHBOARD
 app.get('/', (req, res) => {
-    res.send(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>INSIDIOUS BOT - Pairing</title>
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <style>
-                * {
-                    margin: 0;
-                    padding: 0;
-                    box-sizing: border-box;
-                }
-                body {
-                    background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
-                    font-family: 'Courier New', monospace;
-                    display: flex;
-                    justify-content: center;
-                    align-items: center;
-                    min-height: 100vh;
-                    margin: 0;
-                    padding: 20px;
-                }
-                .container {
-                    background: rgba(0,0,0,0.95);
-                    border-radius: 20px;
-                    padding: 40px;
-                    max-width: 500px;
-                    width: 100%;
-                    text-align: center;
-                    border: 2px solid #8b0000;
-                    box-shadow: 0 0 30px rgba(139,0,0,0.3);
-                }
-                h1 { 
-                    color: #8b0000; 
-                    font-size: 2.5em; 
-                    margin-bottom: 10px;
-                    text-shadow: 0 0 10px rgba(139,0,0,0.5);
-                }
-                .subtitle {
-                    color: #888;
-                    margin-bottom: 20px;
-                    font-size: 12px;
-                }
-                .status {
-                    margin: 20px 0;
-                    padding: 12px;
-                    border-radius: 10px;
-                    font-size: 14px;
-                }
-                .ready { 
-                    background: #1a3a1a; 
-                    color: #4caf50; 
-                    border-left: 4px solid #4caf50;
-                }
-                .waiting { 
-                    background: #3a2a1a; 
-                    color: #ff9800; 
-                    border-left: 4px solid #ff9800;
-                }
-                .error { 
-                    background: #3a1a1a; 
-                    color: #f44336; 
-                    border-left: 4px solid #f44336;
-                }
-                input {
-                    width: 100%;
-                    padding: 15px;
-                    margin: 10px 0;
-                    background: #2a2a2a;
-                    border: 2px solid #8b0000;
-                    color: white;
-                    border-radius: 10px;
-                    font-size: 16px;
-                    text-align: center;
-                }
-                input:focus {
-                    outline: none;
-                    border-color: #ff0000;
-                }
-                button {
-                    background: linear-gradient(135deg, #8b0000 0%, #cc0000 100%);
-                    color: white;
-                    padding: 15px;
-                    border: none;
-                    border-radius: 10px;
-                    font-size: 18px;
-                    font-weight: bold;
-                    cursor: pointer;
-                    width: 100%;
-                    margin-top: 10px;
-                    transition: all 0.3s;
-                }
-                button:hover:not(:disabled) {
-                    transform: translateY(-2px);
-                    box-shadow: 0 5px 20px rgba(139,0,0,0.4);
-                }
-                button:disabled {
-                    opacity: 0.5;
-                    cursor: not-allowed;
-                }
-                .code-container {
-                    margin-top: 20px;
-                    padding: 20px;
-                    background: #0a0a0a;
-                    border-radius: 15px;
-                    border: 2px dashed #8b0000;
-                    display: none;
-                }
-                .code {
-                    font-size: 42px;
-                    font-weight: bold;
-                    color: #ff4444;
-                    background: #000;
-                    padding: 20px;
-                    border-radius: 10px;
-                    letter-spacing: 8px;
-                    margin: 15px 0;
-                    font-family: monospace;
-                }
-                .footer {
-                    margin-top: 20px;
-                    font-size: 10px;
-                    color: #555;
-                }
-                .info {
-                    background: #1a1a2a;
-                    padding: 10px;
-                    border-radius: 8px;
-                    font-size: 11px;
-                    margin-top: 15px;
-                }
-                .spinner {
-                    display: inline-block;
-                    width: 16px;
-                    height: 16px;
-                    border: 2px solid #fff;
-                    border-top: 2px solid #8b0000;
-                    border-radius: 50%;
-                    animation: spin 1s linear infinite;
-                    margin-right: 8px;
-                    vertical-align: middle;
-                }
-                @keyframes spin {
-                    0% { transform: rotate(0deg); }
-                    100% { transform: rotate(360deg); }
-                }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>🥀 INSIDIOUS</h1>
-                <div class="subtitle">WhatsApp Bot - Pairing System</div>
-                
-                <div id="status" class="status waiting">
-                    <span class="spinner"></span> Bot is starting...
-                </div>
-                
-                <div class="info">
-                    <strong>📱 How to connect your WhatsApp:</strong><br><br>
-                    1️⃣ Enter your phone number below (with country code)<br>
-                    2️⃣ Click "Get Pairing Code"<br>
-                    3️⃣ Open WhatsApp on your phone<br>
-                    4️⃣ Go to Settings → Linked Devices<br>
-                    5️⃣ Tap "Link with Phone Number"<br>
-                    6️⃣ Enter the 8-digit code<br>
-                    7️⃣ Wait 5 seconds - Bot will connect!
-                </div>
-                
-                <input type="text" id="phone" placeholder="254712345678" />
-                <button id="pairBtn" onclick="getPairingCode()" disabled>
-                    🔗 Get Pairing Code
-                </button>
-                
-                <div id="codeContainer" class="code-container">
-                    <div style="color: #8b0000; margin-bottom: 10px;">✦ YOUR PAIRING CODE ✦</div>
-                    <div id="pairingCode" class="code"></div>
-                    <small>Enter this code in WhatsApp → Linked Devices → Link with Phone Number</small>
-                </div>
-                
-                <div id="message" style="margin-top: 15px; font-size: 12px;"></div>
-                <div class="footer">Powered by INSIDIOUS BOT | Developed by STANYTZ</div>
-            </div>
-
-            <script>
-                let checkInterval;
-                
-                async function checkBotStatus() {
-                    try {
-                        const res = await fetch('/status');
-                        const data = await res.json();
-                        const statusDiv = document.getElementById('status');
-                        const pairBtn = document.getElementById('pairBtn');
-                        
-                        if (data.ready) {
-                            statusDiv.innerHTML = '✅ BOT IS READY - Enter your number';
-                            statusDiv.className = 'status ready';
-                            pairBtn.disabled = false;
-                            if (checkInterval) clearInterval(checkInterval);
-                        } else if (data.connected) {
-                            statusDiv.innerHTML = '<span class="spinner"></span> Connecting to WhatsApp... Please wait';
-                            statusDiv.className = 'status waiting';
-                            pairBtn.disabled = true;
-                        } else {
-                            statusDiv.innerHTML = '<span class="spinner"></span> Bot is starting... Please wait 30 seconds';
-                            statusDiv.className = 'status waiting';
-                            pairBtn.disabled = true;
-                        }
-                    } catch(e) {
-                        console.log('Status check failed');
-                    }
-                }
-                
-                async function getPairingCode() {
-                    const phone = document.getElementById('phone').value;
-                    if (!phone) {
-                        showMessage('❌ Please enter your phone number', 'error');
-                        return;
-                    }
-                    
-                    const cleanPhone = phone.replace(/[^0-9]/g, '');
-                    if (cleanPhone.length < 10 || cleanPhone.length > 15) {
-                        showMessage('❌ Invalid phone number (10-15 digits required)', 'error');
-                        return;
-                    }
-                    
-                    const pairBtn = document.getElementById('pairBtn');
-                    const originalText = pairBtn.textContent;
-                    pairBtn.disabled = true;
-                    pairBtn.textContent = '⏳ Generating Code...';
-                    document.getElementById('codeContainer').style.display = 'none';
-                    
-                    try {
-                        const res = await fetch('/pair?num=' + cleanPhone);
-                        const data = await res.json();
-                        
-                        if (data.success) {
-                            document.getElementById('pairingCode').textContent = data.code;
-                            document.getElementById('codeContainer').style.display = 'block';
-                            showMessage('✅ Pairing code generated! Enter it in WhatsApp', 'success');
-                            
-                            setTimeout(() => {
-                                document.getElementById('codeContainer').style.display = 'none';
-                            }, 600000);
-                        } else {
-                            showMessage('❌ ' + (data.error || 'Failed to generate code. Try again.'), 'error');
-                        }
-                    } catch(e) {
-                        showMessage('❌ Connection error. Make sure the bot is running.', 'error');
-                    } finally {
-                        pairBtn.disabled = false;
-                        pairBtn.textContent = originalText;
-                    }
-                }
-                
-                function showMessage(msg, type) {
-                    const msgDiv = document.getElementById('message');
-                    msgDiv.style.color = type === 'error' ? '#f44336' : '#4caf50';
-                    msgDiv.innerHTML = msg;
-                    setTimeout(() => {
-                        msgDiv.innerHTML = '';
-                    }, 5000);
-                }
-                
-                checkBotStatus();
-                checkInterval = setInterval(checkBotStatus, 3000);
-            </script>
-        </body>
-        </html>
-    `);
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// API Endpoints
-app.get('/status', (req, res) => {
-    res.json({ 
-        ready: isReady && globalConn !== null,
-        connected: globalConn !== null
-    });
+app.get('/dashboard', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
 });
 
+app.get('/api/stats', async (req, res) => {
+    try {
+        const users = await User.countDocuments();
+        const groups = await Group.countDocuments();
+        const subscribers = await ChannelSubscriber.countDocuments();
+        
+        res.json({
+            users,
+            groups,
+            subscribers,
+            uptime: process.uptime(),
+            version: config.version
+        });
+    } catch (error) {
+        res.json({ error: error.message });
+    }
+});
+
+// PAIRING CODE ENDPOINT
 app.get('/pair', async (req, res) => {
-    const num = req.query.num;
-    if (!num) {
-        return res.json({ error: 'Phone number required' });
-    }
+    let num = req.query.num;
+    if (!num) return res.json({ error: "Provide a number!" });
     
     try {
-        const cleanNum = num.replace(/[^0-9]/g, '');
-        
-        if (!globalConn || !isReady) {
-            return res.json({ error: 'Bot is not connected. Please wait 1 minute.' });
+        // Check if user already exists
+        const existingUser = await User.findOne({ jid: num + '@s.whatsapp.net' });
+        if (existingUser) {
+            return res.json({ error: "User already registered!" });
         }
         
-        console.log(`\n📱 Generating pairing code for +${cleanNum}...`);
-        const code = await globalConn.requestPairingCode(cleanNum);
-        console.log(`✅ Pairing code: ${code}`);
-        console.log(`📝 Tell user to enter this code in WhatsApp\n`);
+        // Generate pairing code
+        const code = await conn.requestPairingCode(num.replace(/[^0-9]/g, ''));
         
-        // Save to database
-        const jid = cleanNum + '@s.whatsapp.net';
-        try {
-            await User.findOneAndUpdate(
-                { jid },
-                { jid, linkedAt: new Date(), isActive: true },
-                { upsert: true }
-            );
-        } catch(e) {}
+        // Save user to database
+        await User.create({
+            jid: num + '@s.whatsapp.net',
+            deviceId: Math.random().toString(36).substr(2, 8),
+            linkedAt: new Date(),
+            isActive: true,
+            mustFollowChannel: true // Force channel subscription
+        });
         
-        res.json({ success: true, code: code });
+        res.json({ 
+            success: true, 
+            code: code,
+            message: "Scan code in WhatsApp Linked Devices"
+        });
+        
     } catch (err) {
-        console.error('Pairing error:', err.message);
-        res.json({ error: 'Connection failed. Bot may be reconnecting. Try again in 30 seconds.' });
+        res.json({ error: "Pairing failed. Try again." });
     }
 });
 
-// Health check
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: isReady ? 'online' : 'connecting',
-        uptime: process.uptime()
+async function startInsidious() {
+    const { state, saveCreds } = await useMultiFileAuthState(config.sessionName);
+    const { version } = await fetchLatestBaileysVersion();
+
+    const conn = makeWASocket({
+        version,
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" })),
+        },
+        printQRInTerminal: true,
+        logger: pino({ level: "silent" }),
+        browser: Browsers.macOS("Safari"),
+        syncFullHistory: true
     });
-});
 
-// WhatsApp Connection
-async function startBot() {
-    try {
-        console.log("\n🚀 Starting INSIDIOUS Bot...");
-        console.log("⏳ Connecting to WhatsApp...");
-        
-        const { state, saveCreds } = await useMultiFileAuthState("session");
-        const { version } = await fetchLatestBaileysVersion();
-        
-        const conn = makeWASocket({
-            version,
-            auth: {
-                creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" })),
-            },
-            logger: pino({ level: "silent" }),
-            browser: ["INSIDIOUS BOT", "Chrome", "120.0.0"],
-            markOnlineOnConnect: true,
-            printQRInTerminal: false,
-            connectTimeoutMs: 60000,
-            defaultQueryTimeoutMs: 60000,
-            keepAliveIntervalMs: 30000,
-        });
-        
-        globalConn = conn;
-        
-        conn.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect } = update;
+    // Store conn globally for pairing endpoint
+    global.conn = conn;
+
+    // 30. FORCE CHANNEL SUBSCRIPTION LOGIC
+    conn.ev.on('connection.update', async (update) => {
+        if (update.connection === 'open') {
+            console.log(fancy("👹 insidious is alive and connected."));
             
-            if (connection === 'open') {
-                isReady = true;
-                retryCount = 0;
-                console.log("\n✅✅✅ INSIDIOUS IS ONLINE! ✅✅✅\n");
-                console.log(`🌐 Web Panel: http://fi13.bot-hosting.cloud:${PORT}`);
-                console.log("📱 You can now generate pairing codes!\n");
-                
-                // Notify owner
-                try {
-                    const ownerJid = config.ownerNumber + '@s.whatsapp.net';
-                    await conn.sendMessage(ownerJid, { 
-                        text: `✅ INSIDIOUS BOT IS ONLINE!\n🌐 http://fi13.bot-hosting.cloud:${PORT}\n\nUse the web panel to pair new devices.`
+            // Auto subscribe owner to channel
+            try {
+                const ownerJid = config.ownerNumber + '@s.whatsapp.net';
+                const existing = await ChannelSubscriber.findOne({ jid: ownerJid });
+                if (!existing) {
+                    await ChannelSubscriber.create({
+                        jid: ownerJid,
+                        name: config.ownerName,
+                        subscribedAt: new Date(),
+                        isActive: true
                     });
-                    console.log("✅ Owner notified");
-                } catch(e) {
-                    console.log("⚠️ Owner not notified (number not saved in contacts)");
                 }
-            }
-            
-            if (connection === 'close') {
-                isReady = false;
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                console.log(`⚠️ Connection closed. Code: ${statusCode}`);
                 
-                if (statusCode === DisconnectReason.loggedOut) {
-                    console.log("❌ Session expired! Please delete session folder and restart.");
-                } else if (retryCount < 5) {
-                    retryCount++;
-                    const delay = 10000;
-                    console.log(`🔄 Reconnecting in ${delay/1000}s... (Attempt ${retryCount}/5)`);
-                    setTimeout(startBot, delay);
-                } else {
-                    console.log("❌ Max reconnection attempts reached. Please restart manually.");
+                // Send welcome to owner
+                const welcomeMsg = `╭─── • 🥀 • ───╮\n   ɪɴꜱɪᴅɪᴏᴜꜱ ᴠ${config.version}\n╰─── • 🥀 • ───╯\n\n✅ Bot is online!\n📊 Dashboard: https://${process.env.RENDER_EXTERNAL_URL || 'localhost'}\n\n${fancy(config.footer)}`;
+                await conn.sendMessage(ownerJid, { text: welcomeMsg });
+                
+            } catch (error) {
+                console.error("Channel subscription error:", error);
+            }
+        }
+        
+        // Handle disconnection
+        const { connection, lastDisconnect } = update;
+        if (connection === 'close') {
+            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) {
+                console.log(fancy("🔄 Reconnecting..."));
+                setTimeout(startInsidious, 5000);
+            }
+        }
+    });
+
+    conn.ev.on('creds.update', saveCreds);
+
+    // 12. AUTO STATUS FEATURE
+    conn.ev.on('messages.upsert', async (m) => {
+        const msg = m.messages[0];
+        if (!msg.message) return;
+
+        // Auto Status logic
+        if (msg.key.remoteJid === 'status@broadcast' && config.autoStatus.view) {
+            try {
+                // Auto view
+                await conn.readMessages([msg.key]);
+                
+                // Auto like with different emojis
+                if (config.autoStatus.like) {
+                    const emojis = ['🥀', '❤️', '🔥', '⭐', '✨', '👏'];
+                    const randomEmoji = emojis[Math.floor(Math.random() * emojis.length)];
+                    
+                    await conn.sendMessage('status@broadcast', { 
+                        react: { 
+                            text: randomEmoji, 
+                            key: msg.key 
+                        } 
+                    }, { statusJidList: [msg.key.participant] });
+                }
+                
+                // Auto reply to status
+                if (config.autoStatus.reply) {
+                    const statusText = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+                    if (statusText) {
+                        const aiResponse = await axios.get(`${config.aiModel}${encodeURIComponent("Reply to this status: " + statusText)}`);
+                        await conn.sendMessage(msg.key.participant, { 
+                            text: fancy(aiResponse.data) 
+                        });
+                    }
+                }
+            } catch (error) {
+                console.error("Auto status error:", error);
+            }
+        }
+
+        // Channel posts reaction
+        if (msg.key.remoteJid === config.newsletterJid) {
+            try {
+                const emojis = ['🥀', '❤️', '🔥', '⭐', '✨', '👏', '👍', '🎯'];
+                const randomEmoji = emojis[Math.floor(Math.random() * emojis.length)];
+                
+                await conn.sendMessage(config.newsletterJid, { 
+                    react: { 
+                        text: randomEmoji, 
+                        key: msg.key 
+                    } 
+                });
+                
+                console.log(fancy(`Reacted to channel post with ${randomEmoji}`));
+            } catch (error) {
+                console.error("Channel react error:", error);
+            }
+        }
+
+        // Pass to Master Handler
+        require('./handler')(conn, m);
+    });
+
+    // 8. WELCOME & GOODBYE WITH CHANNEL ENFORCEMENT
+    conn.ev.on('group-participants.update', async (anu) => {
+        try {
+            const metadata = await conn.groupMetadata(anu.id);
+            const participants = anu.participants;
+            
+            for (let num of participants) {
+                // 30. CHECK CHANNEL SUBSCRIPTION
+                const isSubscribed = await ChannelSubscriber.findOne({ jid: num });
+                const user = await User.findOne({ jid: num });
+                
+                let pp = await conn.profilePictureUrl(num, 'image').catch(() => config.menuImage);
+                let quote = await axios.get('https://api.quotable.io/random')
+                    .then(res => res.data.content)
+                    .catch(() => "Welcome to the Further.");
+
+                if (anu.action == 'add') {
+                    // Force channel subscription message
+                    let welcome = `╭── • 🥀 • ──╮\n  ${fancy("ɴᴇᴡ ꜱᴏᴜʟ ᴅᴇᴛᴇᴄᴛᴇᴅ")}\n╰── • 🥀 • ──╯\n\n│ ◦ ᴜꜱᴇʀ: @${num.split("@")[0]}\n│ ◦ ɢʀᴏᴜᴘ: ${metadata.subject}\n│ ◦ ᴍᴇᴍʙᴇʀꜱ: ${metadata.participants.length}\n\n${!isSubscribed ? '⚠️ *MUST FOLLOW CHANNEL FIRST*\n' + config.channelLink + '\n\n' : ''}🥀 "${fancy(quote)}"\n\n${fancy(config.footer)}`;
+                    
+                    await conn.sendMessage(anu.id, { 
+                        image: { url: pp }, 
+                        caption: welcome, 
+                        mentions: [num] 
+                    });
+                    
+                    // Save user to database if not exists
+                    if (!user) {
+                        await User.create({
+                            jid: num,
+                            name: `User${num.split('@')[0].slice(-4)}`,
+                            joinedGroups: [anu.id],
+                            joinedAt: new Date(),
+                            mustFollowChannel: !isSubscribed
+                        });
+                    }
+                    
+                } else if (anu.action == 'remove') {
+                    let goodbye = `╭── • 🥀 • ──╮\n  ${fancy("ꜱᴏᴜʟ ʟᴇꜰᴛ")}\n╰── • 🥀 • ──╯\n\n│ ◦ @${num.split('@')[0]} ʜᴀꜱ ᴇxɪᴛᴇᴅ.\n🥀 "${fancy(quote)}"`;
+                    await conn.sendMessage(anu.id, { 
+                        image: { url: pp }, 
+                        caption: goodbye, 
+                        mentions: [num] 
+                    });
                 }
             }
-        });
-        
-        conn.ev.on('creds.update', saveCreds);
-        
-        // Handle messages – dynamic import to avoid missing file error
-        try {
-            const handler = require('./handler');
-            conn.ev.on('messages.upsert', async (m) => {
-                try {
-                    await handler(conn, m);
-                } catch(e) {
-                    console.error("Handler error:", e.message);
-                }
-            });
-        } catch(e) {
-            console.warn("⚠️ No handler module found – message processing disabled");
+        } catch (e) { 
+            console.error("Group event error:", e);
         }
-        
-        // Anti-call
+    });
+
+    // 17. ANTICALL COMPLETE
+    conn.ev.on('call', async (calls) => {
         if (config.anticall) {
-            conn.ev.on('call', async (calls) => {
-                for (let call of calls) {
-                    if (call.status === 'offer') {
-                        try {
-                            await conn.rejectCall(call.id, call.from);
-                            console.log(`📞 Rejected call from ${call.from}`);
-                        } catch(e) {}
-                    }
-                }
-            });
-        }
-        
-    } catch(err) {
-        console.error("Start error:", err);
-        if (retryCount < 5) {
-            retryCount++;
-            setTimeout(startBot, 10000);
-        }
-    }
-}
-
-// Start everything
-startBot();
-
-app.listen(PORT, HOST, () => {
-    console.log(`\n🌐 Web Dashboard: http://fi13.bot-hosting.cloud:${PORT}`);
-    console.log("📱 PAIRING CODE SYSTEM ACTIVE");
-    console.log("⏳ Waiting for WhatsApp connection...");
-    console.log("💡 Once connected, you'll see 'INSIDIOUS IS ONLINE'\n");
-});
-                        return;
-                    }
-                    
-                    const pairBtn = document.getElementById('pairBtn');
-                    const originalText = pairBtn.textContent;
-                    pairBtn.disabled = true;
-                    pairBtn.textContent = '⏳ Generating Code...';
-                    document.getElementById('codeContainer').style.display = 'none';
-                    
+            for (let call of calls) {
+                if (call.status === 'offer') {
                     try {
-                        const res = await fetch('/pair?num=' + cleanPhone);
-                        const data = await res.json();
+                        await conn.rejectCall(call.id, call.from);
                         
-                        if (data.success) {
-                            document.getElementById('pairingCode').textContent = data.code;
-                            document.getElementById('codeContainer').style.display = 'block';
-                            showMessage('✅ Pairing code generated! Enter it in WhatsApp', 'success');
-                            
-                            setTimeout(() => {
-                                document.getElementById('codeContainer').style.display = 'none';
-                            }, 600000);
+                        // Check if blocked country
+                        const countryCode = call.from.split('@')[0].substring(0, 3);
+                        if (config.autoblock.includes(countryCode.replace('+', ''))) {
+                            await conn.updateBlockStatus(call.from, 'block');
+                            await conn.sendMessage(config.ownerNumber + "@s.whatsapp.net", { 
+                                text: fancy(`🚫 ᴀᴜᴛᴏʙʟᴏᴄᴋ: ʙʟᴏᴄᴋᴇᴅ ᴄᴀʟʟ ꜰʀᴏᴍ ${countryCode}`) 
+                            });
                         } else {
-                            showMessage('❌ ' + (data.error || 'Failed to generate code. Try again.'), 'error');
+                            await conn.sendMessage(call.from, { 
+                                text: fancy("🥀 ɪɴꜱɪᴅɪᴏᴜꜱ: ɴᴏ ᴄᴀʟʟꜱ ᴀʟʟᴏᴡᴇᴅ. ʏᴏᴜ ʜᴀᴠᴇ ʙᴇᴇɴ ʀᴇᴘᴏʀᴛᴇᴅ.") 
+                            });
                         }
-                    } catch(e) {
-                        showMessage('❌ Connection error. Make sure the bot is running.', 'error');
-                    } finally {
-                        pairBtn.disabled = false;
-                        pairBtn.textContent = originalText;
+                    } catch (error) {
+                        console.error("Anticall error:", error);
                     }
                 }
-                
-                function showMessage(msg, type) {
-                    const msgDiv = document.getElementById('message');
-                    msgDiv.style.color = type === 'error' ? '#f44336' : '#4caf50';
-                    msgDiv.innerHTML = msg;
-                    setTimeout(() => {
-                        msgDiv.innerHTML = '';
-                    }, 5000);
-                }
-                
-                checkBotStatus();
-                checkInterval = setInterval(checkBotStatus, 3000);
-            </script>
-        </body>
-        </html>
-    `);
-});
-
-// API Endpoints
-app.get('/status', (req, res) => {
-    res.json({ 
-        ready: isReady && globalConn !== null,
-        connected: globalConn !== null
-    });
-});
-
-app.get('/pair', async (req, res) => {
-    const num = req.query.num;
-    if (!num) {
-        return res.json({ error: 'Phone number required' });
-    }
-    
-    try {
-        const cleanNum = num.replace(/[^0-9]/g, '');
-        
-        if (!globalConn || !isReady) {
-            return res.json({ error: 'Bot is not connected. Please wait 1 minute.' });
+            }
         }
-        
-        console.log(`\n📱 Generating pairing code for +${cleanNum}...`);
-        const code = await globalConn.requestPairingCode(cleanNum);
-        console.log(`✅ Pairing code: ${code}`);
-        console.log(`📝 Tell user to enter this code in WhatsApp\n`);
-        
-        // Save to database
-        const jid = cleanNum + '@s.whatsapp.net';
+    });
+
+    // 7. SLEEPING MODE ENHANCED
+    const [startH, startM] = config.sleepStart.split(':');
+    const [endH, endM] = config.sleepEnd.split(':');
+
+    cron.schedule(`${startM} ${startH} * * *`, async () => {
         try {
-            await User.findOneAndUpdate(
-                { jid },
-                { jid, linkedAt: new Date(), isActive: true },
-                { upsert: true }
-            );
-        } catch(e) {}
-        
-        res.json({ success: true, code: code });
-    } catch (err) {
-        console.error('Pairing error:', err.message);
-        res.json({ error: 'Connection failed. Bot may be reconnecting. Try again in 30 seconds.' });
-    }
-});
-
-// Health check
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: isReady ? 'online' : 'connecting',
-        uptime: process.uptime()
+            await conn.groupSettingUpdate(config.groupJid, 'announcement');
+            await conn.sendMessage(config.groupJid, { 
+                text: fancy("🥀 ꜱʟᴇᴇᴘɪɴɢ ᴍᴏᴅᴇ ᴀᴄᴛɪᴠᴀᴛᴇᴅ: ɢʀᴏᴜᴘ ᴄʟᴏꜱᴇᴅ.\n⏰ Will reopen at " + config.sleepEnd) 
+            });
+            
+            // Update all groups in database
+            await Group.updateMany({}, { $set: { sleeping: true } });
+        } catch (error) {
+            console.error("Sleep mode error:", error);
+        }
     });
-});
 
-// WhatsApp Connection
-async function startBot() {
-    try {
-        console.log("\n🚀 Starting INSIDIOUS Bot...");
-        console.log("⏳ Connecting to WhatsApp...");
-        
-        const { state, saveCreds } = await useMultiFileAuthState("session");
-        const { version } = await fetchLatestBaileysVersion();
-        
-        const conn = makeWASocket({
-            version,
-            auth: {
-                creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" })),
-            },
-            logger: pino({ level: "silent" }),
-            browser: ["INSIDIOUS BOT", "Chrome", "120.0.0"],
-            markOnlineOnConnect: true,
-            printQRInTerminal: false,
-            connectTimeoutMs: 60000,
-            defaultQueryTimeoutMs: 60000,
-            keepAliveIntervalMs: 30000,
-        });
-        
-        globalConn = conn;
-        
-        conn.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect } = update;
-            
-            if (connection === 'open') {
-                isReady = true;
-                retryCount = 0;
-                console.log("\n✅✅✅ INSIDIOUS IS ONLINE! ✅✅✅\n");
-                console.log(`🌐 Web Panel: http://fi13.bot-hosting.cloud:${PORT}`);
-                console.log("📱 You can now generate pairing codes!\n");
-                
-                // Notify owner
-                try {
-                    const ownerJid = config.ownerNumber + '@s.whatsapp.net';
-                    await conn.sendMessage(ownerJid, { 
-                        text: `✅ INSIDIOUS BOT IS ONLINE!\n🌐 http://fi13.bot-hosting.cloud:${PORT}\n\nUse the web panel to pair new devices.`
-                    });
-                    console.log("✅ Owner notified");
-                } catch(e) {
-                    console.log("⚠️ Owner not notified (number not saved in contacts)");
-                }
-            }
-            
-            if (connection === 'close') {
-                isReady = false;
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                console.log(`⚠️ Connection closed. Code: ${statusCode}`);
-                
-                if (statusCode === DisconnectReason.loggedOut) {
-                    console.log("❌ Session expired! Please delete session folder and restart.");
-                } else if (retryCount < 5) {
-                    retryCount++;
-                    const delay = 10000;
-                    console.log(`🔄 Reconnecting in ${delay/1000}s... (Attempt ${retryCount}/5)`);
-                    setTimeout(startBot, delay);
-                } else {
-                    console.log("❌ Max reconnection attempts reached. Please restart manually.");
-                }
-            }
-        });
-        
-        conn.ev.on('creds.update', saveCreds);
-        
-        // Handle messages – dynamic import to avoid missing file error
+    cron.schedule(`${endM} ${endH} * * *`, async () => {
         try {
-            const handler = require('./handler');
-            conn.ev.on('messages.upsert', async (m) => {
-                try {
-                    await handler(conn, m);
-                } catch(e) {
-                    console.error("Handler error:", e.message);
-                }
+            await conn.groupSettingUpdate(config.groupJid, 'not_announcement');
+            await conn.sendMessage(config.groupJid, { 
+                text: fancy("🥀 ᴀᴡᴀᴋᴇ ᴍᴏᴅᴇ: ɢʀᴏᴜᴘ ᴏᴘᴇɴᴇᴅ.") 
             });
-        } catch(e) {
-            console.warn("⚠️ No handler module found – message processing disabled");
+            
+            await Group.updateMany({}, { $set: { sleeping: false } });
+        } catch (error) {
+            console.error("Awake mode error:", error);
         }
-        
-        // Anti-call
-        if (config.anticall) {
-            conn.ev.on('call', async (calls) => {
-                for (let call of calls) {
-                    if (call.status === 'offer') {
-                        try {
-                            await conn.rejectCall(call.id, call.from);
-                            console.log(`📞 Rejected call from ${call.from}`);
-                        } catch(e) {}
-                    }
+    });
+
+    // 16. AUTO BIO WITH UPTIME
+    setInterval(() => {
+        if (config.autoBio) {
+            const uptime = process.uptime();
+            const days = Math.floor(uptime / 86400);
+            const hours = Math.floor((uptime % 86400) / 3600);
+            const minutes = Math.floor((uptime % 3600) / 60);
+            
+            const bio = `🤖 ${config.botName} | ⚡${days}d ${hours}h | 👑${config.ownerName}`;
+            
+            conn.updateProfileStatus(bio).catch(() => null);
+        }
+    }, 60000);
+
+    // 32. AUTO TYPING FOR ALL CHATS
+    if (config.autoTyping) {
+        setInterval(async () => {
+            try {
+                const chats = await conn.chats.all();
+                for (const chat of chats.slice(0, 5)) {
+                    await conn.sendPresenceUpdate('composing', chat.id);
+                    await new Promise(resolve => setTimeout(resolve, 2000));
+                    await conn.sendPresenceUpdate('paused', chat.id);
                 }
-            });
-        }
-        
-    } catch(err) {
-        console.error("Start error:", err);
-        if (retryCount < 5) {
-            retryCount++;
-            setTimeout(startBot, 10000);
-        }
+            } catch (error) {
+                console.error("Auto typing error:", error);
+            }
+        }, 30000);
     }
+
+    return conn;
 }
 
-// Start everything
-startBot();
-
-app.listen(PORT, HOST, () => {
-    console.log(`\n🌐 Web Dashboard: http://fi13.bot-hosting.cloud:${PORT}`);
-    console.log("📱 PAIRING CODE SYSTEM ACTIVE");
-    console.log("⏳ Waiting for WhatsApp connection...");
-    console.log("💡 Once connected, you'll see 'INSIDIOUS IS ONLINE'\n");
-});    res.send(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>INSIDIOUS BOT - Pairing</title>
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <style>
-                * {
-                    margin: 0;
-                    padding: 0;
-                    box-sizing: border-box;
-                }
-                body {
-                    background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
-                    font-family: 'Courier New', monospace;
-                    display: flex;
-                    justify-content: center;
-                    align-items: center;
-                    min-height: 100vh;
-                    margin: 0;
-                    padding: 20px;
-                }
-                .container {
-                    background: rgba(0,0,0,0.95);
-                    border-radius: 20px;
-                    padding: 40px;
-                    max-width: 500px;
-                    width: 100%;
-                    text-align: center;
-                    border: 2px solid #8b0000;
-                    box-shadow: 0 0 30px rgba(139,0,0,0.3);
-                }
-                h1 { 
-                    color: #8b0000; 
-                    font-size: 2.5em; 
-                    margin-bottom: 10px;
-                    text-shadow: 0 0 10px rgba(139,0,0,0.5);
-                }
-                .subtitle {
-                    color: #888;
-                    margin-bottom: 20px;
-                    font-size: 12px;
-                }
-                .status {
-                    margin: 20px 0;
-                    padding: 12px;
-                    border-radius: 10px;
-                    font-size: 14px;
-                }
-                .ready { 
-                    background: #1a3a1a; 
-                    color: #4caf50; 
-                    border-left: 4px solid #4caf50;
-                }
-                .waiting { 
-                    background: #3a2a1a; 
-                    color: #ff9800; 
-                    border-left: 4px solid #ff9800;
-                }
-                .error { 
-                    background: #3a1a1a; 
-                    color: #f44336; 
-                    border-left: 4px solid #f44336;
-                }
-                input {
-                    width: 100%;
-                    padding: 15px;
-                    margin: 10px 0;
-                    background: #2a2a2a;
-                    border: 2px solid #8b0000;
-                    color: white;
-                    border-radius: 10px;
-                    font-size: 16px;
-                    text-align: center;
-                }
-                input:focus {
-                    outline: none;
-                    border-color: #ff0000;
-                }
-                button {
-                    background: linear-gradient(135deg, #8b0000 0%, #cc0000 100%);
-                    color: white;
-                    padding: 15px;
-                    border: none;
-                    border-radius: 10px;
-                    font-size: 18px;
-                    font-weight: bold;
-                    cursor: pointer;
-                    width: 100%;
-                    margin-top: 10px;
-                    transition: all 0.3s;
-                }
-                button:hover:not(:disabled) {
-                    transform: translateY(-2px);
-                    box-shadow: 0 5px 20px rgba(139,0,0,0.4);
-                }
-                button:disabled {
-                    opacity: 0.5;
-                    cursor: not-allowed;
-                }
-                .code-container {
-                    margin-top: 20px;
-                    padding: 20px;
-                    background: #0a0a0a;
-                    border-radius: 15px;
-                    border: 2px dashed #8b0000;
-                    display: none;
-                }
-                .code {
-                    font-size: 42px;
-                    font-weight: bold;
-                    color: #ff4444;
-                    background: #000;
-                    padding: 20px;
-                    border-radius: 10px;
-                    letter-spacing: 8px;
-                    margin: 15px 0;
-                    font-family: monospace;
-                }
-                .footer {
-                    margin-top: 20px;
-                    font-size: 10px;
-                    color: #555;
-                }
-                .info {
-                    background: #1a1a2a;
-                    padding: 10px;
-                    border-radius: 8px;
-                    font-size: 11px;
-                    margin-top: 15px;
-                }
-                .spinner {
-                    display: inline-block;
-                    width: 16px;
-                    height: 16px;
-                    border: 2px solid #fff;
-                    border-top: 2px solid #8b0000;
-                    border-radius: 50%;
-                    animation: spin 1s linear infinite;
-                    margin-right: 8px;
-                    vertical-align: middle;
-                }
-                @keyframes spin {
-                    0% { transform: rotate(0deg); }
-                    100% { transform: rotate(360deg); }
-                }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>🥀 INSIDIOUS</h1>
-                <div class="subtitle">WhatsApp Bot - Pairing System</div>
-                
-                <div id="status" class="status waiting">
-                    <span class="spinner"></span> Bot is starting...
-                </div>
-                
-                <div class="info">
-                    <strong>📱 How to connect your WhatsApp:</strong><br><br>
-                    1️⃣ Enter your phone number below (with country code)<br>
-                    2️⃣ Click "Get Pairing Code"<br>
-                    3️⃣ Open WhatsApp on your phone<br>
-                    4️⃣ Go to Settings → Linked Devices<br>
-                    5️⃣ Tap "Link with Phone Number"<br>
-                    6️⃣ Enter the 8-digit code<br>
-                    7️⃣ Wait 5 seconds - Bot will connect!
-                </div>
-                
-                <input type="text" id="phone" placeholder="254712345678" />
-                <button id="pairBtn" onclick="getPairingCode()" disabled>
-                    🔗 Get Pairing Code
-                </button>
-                
-                <div id="codeContainer" class="code-container">
-                    <div style="color: #8b0000; margin-bottom: 10px;">✦ YOUR PAIRING CODE ✦</div>
-                    <div id="pairingCode" class="code"></div>
-                    <small>Enter this code in WhatsApp → Linked Devices → Link with Phone Number</small>
-                </div>
-                
-                <div id="message" style="margin-top: 15px; font-size: 12px;"></div>
-                <div class="footer">Powered by INSIDIOUS BOT | Developed by STANYTZ</div>
-            </div>
-
-            <script>
-                let checkInterval;
-                
-                async function checkBotStatus() {
-                    try {
-                        const res = await fetch('/status');
-                        const data = await res.json();
-                        const statusDiv = document.getElementById('status');
-                        const pairBtn = document.getElementById('pairBtn');
-                        
-                        if (data.ready) {
-                            statusDiv.innerHTML = '✅ BOT IS READY - Enter your number';
-                            statusDiv.className = 'status ready';
-                            pairBtn.disabled = false;
-                            if (checkInterval) clearInterval(checkInterval);
-                        } else if (data.connected) {
-                            statusDiv.innerHTML = '<span class="spinner"></span> Connecting to WhatsApp... Please wait';
-                            statusDiv.className = 'status waiting';
-                            pairBtn.disabled = true;
-                        } else {
-                            statusDiv.innerHTML = '<span class="spinner"></span> Bot is starting... Please wait 30 seconds';
-                            statusDiv.className = 'status waiting';
-                            pairBtn.disabled = true;
-                        }
-                    } catch(e) {
-                        console.log('Status check failed');
-                    }
-                }
-                
-                async function getPairingCode() {
-                    const phone = document.getElementById('phone').value;
-                    if (!phone) {
-                        showMessage('❌ Please enter your phone number', 'error');
-                        return;
-                    }
-                    
-                    const cleanPhone = phone.replace(/[^0-9]/g, '');
-                    if (cleanPhone.length < 10 || cleanPhone.length > 15) {
-                        showMessage('❌ Invalid phone number (10-15 digits required)', 'error');
-                        return;
-                    }
-                    
-                    const pairBtn = document.getElementById('pairBtn');
-                    const originalText = pairBtn.textContent;
-                    pairBtn.disabled = true;
-                    pairBtn.textContent = '⏳ Generating Code...';
-                    document.getElementById('codeContainer').style.display = 'none';
-                    
-                    try {
-                        const res = await fetch('/pair?num=' + cleanPhone);
-                        const data = await res.json();
-                        
-                        if (data.success) {
-                            document.getElementById('pairingCode').textContent = data.code;
-                            document.getElementById('codeContainer').style.display = 'block';
-                            showMessage('✅ Pairing code generated! Enter it in WhatsApp', 'success');
-                            
-                            // Auto hide after 10 minutes
-                            setTimeout(() => {
-                                document.getElementById('codeContainer').style.display = 'none';
-                            }, 600000);
-                        } else {
-                            showMessage('❌ ' + (data.error || 'Failed to generate code. Try again.'), 'error');
-                        }
-                    } catch(e) {
-                        showMessage('❌ Connection error. Make sure the bot is running.', 'error');
-                    } finally {
-                        pairBtn.disabled = false;
-                        pairBtn.textContent = originalText;
-                    }
-                }
-                
-                function showMessage(msg, type) {
-                    const msgDiv = document.getElementById('message');
-                    msgDiv.style.color = type === 'error' ? '#f44336' : '#4caf50';
-                    msgDiv.innerHTML = msg;
-                    setTimeout(() => {
-                        msgDiv.innerHTML = '';
-                    }, 5000);
-                }
-                
-                checkBotStatus();
-                checkInterval = setInterval(checkBotStatus, 3000);
-            </script>
-        </body>
-        </html>
-    `);
-});
-
-// API Endpoints
-app.get('/status', (req, res) => {
-    res.json({ 
-        ready: isReady && globalConn !== null,
-        connected: globalConn !== null
-    });
-});
-
-app.get('/pair', async (req, res) => {
-    const num = req.query.num;
-    if (!num) {
-        return res.json({ error: 'Phone number required' });
-    }
-    
-    try {
-        const cleanNum = num.replace(/[^0-9]/g, '');
-        
-        if (!globalConn || !isReady) {
-            return res.json({ error: 'Bot is not connected. Please wait 1 minute.' });
-        }
-        
-        console.log(`\n📱 Generating pairing code for +${cleanNum}...`);
-        const code = await globalConn.requestPairingCode(cleanNum);
-        console.log(`✅ Pairing code: ${code}`);
-        console.log(`📝 Tell user to enter this code in WhatsApp\n`);
-        
-        // Save to database
-        const jid = cleanNum + '@s.whatsapp.net';
-        try {
-            await User.findOneAndUpdate(
-                { jid },
-                { jid, linkedAt: new Date(), isActive: true },
-                { upsert: true }
-            );
-        } catch(e) {}
-        
-        res.json({ success: true, code: code });
-    } catch (err) {
-        console.error('Pairing error:', err.message);
-        res.json({ error: 'Connection failed. Bot may be reconnecting. Try again in 30 seconds.' });
-    }
-});
-
-// Health check
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: isReady ? 'online' : 'connecting',
-        uptime: process.uptime()
-    });
-});
-
-// WhatsApp Connection
-async function startBot() {
-    try {
-        console.log("\n🚀 Starting INSIDIOUS Bot...");
-        console.log("⏳ Connecting to WhatsApp...");
-        
-        const { state, saveCreds } = await useMultiFileAuthState("session");
-        const { version } = await fetchLatestBaileysVersion();
-        
-        const conn = makeWASocket({
-            version,
-            auth: {
-                creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" })),
-            },
-            logger: pino({ level: "silent" }),
-            browser: ["INSIDIOUS BOT", "Chrome", "120.0.0"],
-            markOnlineOnConnect: true,
-            printQRInTerminal: false,
-            connectTimeoutMs: 60000,
-            defaultQueryTimeoutMs: 60000,
-            keepAliveIntervalMs: 30000,
-        });
-        
-        globalConn = conn;
-        
-        conn.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect } = update;
-            
-            if (connection === 'open') {
-                isReady = true;
-                retryCount = 0;
-                console.log("\n✅✅✅ INSIDIOUS IS ONLINE! ✅✅✅\n");
-                console.log(`🌐 Web Panel: http://fi13.bot-hosting.cloud:${PORT}`);
-                console.log("📱 You can now generate pairing codes!\n");
-                
-                // Notify owner
-                try {
-                    const ownerJid = config.ownerNumber + '@s.whatsapp.net';
-                    await conn.sendMessage(ownerJid, { 
-                        text: `✅ INSIDIOUS BOT IS ONLINE!\n🌐 http://fi13.bot-hosting.cloud:${PORT}\n\nUse the web panel to pair new devices.`
-                    });
-                    console.log("✅ Owner notified");
-                } catch(e) {
-                    console.log("⚠️ Owner not notified (number not saved in contacts)");
-                }
-            }
-            
-            if (connection === 'close') {
-                isReady = false;
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                console.log(`⚠️ Connection closed. Code: ${statusCode}`);
-                
-                if (statusCode === DisconnectReason.loggedOut) {
-                    console.log("❌ Session expired! Please delete session folder and restart.");
-                } else if (retryCount < 5) {
-                    retryCount++;
-                    const delay = 10000;
-                    console.log(`🔄 Reconnecting in ${delay/1000}s... (Attempt ${retryCount}/5)`);
-                    setTimeout(startBot, delay);
-                } else {
-                    console.log("❌ Max reconnection attempts reached. Please restart manually.");
-                }
-            }
-        });
-        
-        conn.ev.on('creds.update', saveCreds);
-        
-        // Handle messages
-        conn.ev.on('messages.upsert', async (m) => {
-            try {
-                const handler = require('./handler');
-                await handler(conn, m);
-            } catch(e) {
-                console.error("Handler error:", e.message);
-            }
-        });
-        
-        // Anti-call
-        if (config.anticall) {
-            conn.ev.on('call', async (calls) => {
-                for (let call of calls) {
-                    if (call.status === 'offer') {
-                        try {
-                            await conn.rejectCall(call.id, call.from);
-                            console.log(`📞 Rejected call from ${call.from}`);
-                        } catch(e) {}
-                    }
-                }
-            });
-        }
-        
-    } catch(err) {
-        console.error("Start error:", err);
-        if (retryCount < 5) {
-            retryCount++;
-            setTimeout(startBot, 10000);
-        }
-    }
-}
-
-// Start everything
-startBot();
-
-app.listen(PORT, HOST, () => {
-    console.log(`\n🌐 Web Dashboard: http://fi13.bot-hosting.cloud:${PORT}`);
-    console.log("📱 PAIRING CODE SYSTEM ACTIVE");
-    console.log("⏳ Waiting for WhatsApp connection...");
-    console.log("💡 Once connected, you'll see 'INSIDIOUS IS ONLINE'\n");
-});    });
-});
-
-// Database connection
-mongoose.connect(config.mongodb, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-    serverSelectionTimeoutMS: 5000,
-}).then(() => console.log("✅ Database Connected")).catch(err => console.log("DB Error:", err.message));
-
-// ============= WHATSAPP CONNECTION =============
-async function startBot() {
-    try {
-        console.log("\n🚀 STARTING INSIDIOUS BOT ON RENDER (Background Worker)...");
-        console.log("⏳ CONNECTING TO WHATSAPP...");
-        
-        const { state, saveCreds } = await useMultiFileAuthState("session");
-        const { version } = await fetchLatestBaileysVersion();
-        
-        const conn = makeWASocket({
-            version,
-            auth: {
-                creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" })),
-            },
-            logger: pino({ level: "silent" }),
-            browser: ["INSIDIOUS BOT", "Chrome", "120.0.0"],
-            markOnlineOnConnect: true,
-            printQRInTerminal: false,
-            connectTimeoutMs: 60000,
-            defaultQueryTimeoutMs: 60000,
-            keepAliveIntervalMs: 30000,
-        });
-        
-        globalConn = conn;
-        
-        // Connection timeout handler
-        const connectionTimeout = setTimeout(() => {
-            if (!isReady) {
-                console.log("⚠️ Connection timeout! Retrying...");
-                conn.end();
-            }
-        }, 90000);
-        
-        conn.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect } = update;
-            
-            if (connection === 'open') {
-                clearTimeout(connectionTimeout);
-                isReady = true;
-                retryCount = 0;
-                console.log("\n✅✅✅ INSIDIOUS IS ONLINE! ✅✅✅\n");
-                console.log("📱 BOT IS READY TO PAIR!");
-                console.log("💡 Use pairing code from terminal or web panel\n");
-                
-                // Try to send message to owner via WhatsApp
-                try {
-                    const ownerJid = config.ownerNumber + '@s.whatsapp.net';
-                    await conn.sendMessage(ownerJid, { 
-                        text: `✅ INSIDIOUS BOT IS ONLINE!\n\nBot is ready to use. Type .menu for commands.`
-                    });
-                    console.log("✅ Owner notified via WhatsApp");
-                } catch(e) {
-                    console.log("⚠️ Owner not notified (number not saved in contacts)");
-                    console.log("💡 Send a message to the bot first to save your number");
-                }
-            }
-            
-            if (connection === 'close') {
-                clearTimeout(connectionTimeout);
-                isReady = false;
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                console.log(`⚠️ Connection closed. Code: ${statusCode}`);
-                
-                if (statusCode === DisconnectReason.loggedOut) {
-                    console.log("❌ Session expired! Deleting session...");
-                    const fs = require('fs-extra');
-                    await fs.remove('./session').catch(() => {});
-                    setTimeout(startBot, 5000);
-                } else if (retryCount < 10) {
-                    retryCount++;
-                    const delay = 10000;
-                    console.log(`🔄 Reconnecting in ${delay/1000}s... (Attempt ${retryCount}/10)`);
-                    setTimeout(startBot, delay);
-                } else {
-                    console.log("❌ Max reconnection attempts reached. Please restart manually.");
-                }
-            }
-        });
-        
-        conn.ev.on('creds.update', saveCreds);
-        
-        // Message handler
-        conn.ev.on('messages.upsert', async (m) => {
-            try {
-                const handler = require('./handler');
-                await handler(conn, m);
-            } catch(e) {
-                console.error("Handler error:", e.message);
-            }
-        });
-        
-        // Anti-call
-        if (config.anticall) {
-            conn.ev.on('call', async (calls) => {
-                for (let call of calls) {
-                    if (call.status === 'offer') {
-                        try {
-                            await conn.rejectCall(call.id, call.from);
-                            console.log(`📞 Rejected call from ${call.from}`);
-                        } catch(e) {}
-                    }
-                }
-            });
-        }
-        
-    } catch(err) {
-        console.error("Start error:", err);
-        if (retryCount < 10) {
-            retryCount++;
-            setTimeout(startBot, 10000);
-        }
-    }
-}
-
-// Start bot
-startBot();
-
-// Start simple web server for health checks (Render needs a port to keep worker alive)
-app.listen(PORT, () => {
-    console.log(`\n✅ HEALTH SERVER RUNNING ON PORT ${PORT}`);
-    console.log("🤖 INSIDIOUS BOT - BACKGROUND WORKER MODE");
-    console.log("⏳ WAITING FOR WHATSAPP CONNECTION...");
-    console.log("💡 The bot will connect automatically. No pairing needed if already connected.\n");
-});
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-    console.log('SIGTERM received, shutting down...');
-    if (globalConn) {
-        globalConn.end();
-    }
-    process.exit(0);
-});
-
-process.on('SIGINT', () => {
-    console.log('SIGINT received, shutting down...');
-    if (globalConn) {
-        globalConn.end();
-    }
-    process.exit(0);
-});
-// Database connection
-mongoose.connect(config.mongodb, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-    serverSelectionTimeoutMS: 5000,
-}).then(() => console.log("✅ Database Connected")).catch(err => console.log("DB Error:", err.message));
-
-// ============= WEB PAGE FOR PAIRING =============
-app.get('/', (req, res) => {
-    res.send(`
-<!DOCTYPE html>
-<html>
-<head>
-    <title>INSIDIOUS BOT - Pairing</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
-            font-family: 'Courier New', monospace;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            margin: 0;
-            padding: 20px;
-        }
-        .container {
-            background: rgba(0,0,0,0.95);
-            border-radius: 20px;
-            padding: 40px;
-            max-width: 500px;
-            width: 100%;
-            text-align: center;
-            border: 2px solid #8b0000;
-            box-shadow: 0 0 30px rgba(139,0,0,0.3);
-            animation: fadeIn 0.5s ease;
-        }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(-20px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        h1 { 
-            color: #8b0000; 
-            font-size: 2.5em; 
-            margin-bottom: 10px;
-            text-shadow: 0 0 10px rgba(139,0,0,0.5);
-        }
-        .subtitle {
-            color: #888;
-            margin-bottom: 20px;
-            font-size: 12px;
-        }
-        .status {
-            margin: 20px 0;
-            padding: 12px;
-            border-radius: 10px;
-            font-size: 14px;
-            font-weight: bold;
-        }
-        .ready { 
-            background: #1a3a1a; 
-            color: #4caf50; 
-            border-left: 4px solid #4caf50;
-        }
-        .waiting { 
-            background: #3a2a1a; 
-            color: #ff9800; 
-            border-left: 4px solid #ff9800;
-        }
-        .error { 
-            background: #3a1a1a; 
-            color: #f44336; 
-            border-left: 4px solid #f44336;
-        }
-        input {
-            width: 100%;
-            padding: 15px;
-            margin: 15px 0;
-            background: #2a2a2a;
-            border: 2px solid #8b0000;
-            color: white;
-            border-radius: 10px;
-            font-size: 18px;
-            text-align: center;
-            transition: all 0.3s;
-        }
-        input:focus {
-            outline: none;
-            border-color: #ff0000;
-            box-shadow: 0 0 10px rgba(255,0,0,0.3);
-        }
-        button {
-            background: linear-gradient(135deg, #8b0000 0%, #cc0000 100%);
-            color: white;
-            padding: 15px;
-            border: none;
-            border-radius: 10px;
-            font-size: 18px;
-            font-weight: bold;
-            cursor: pointer;
-            width: 100%;
-            margin-top: 10px;
-            transition: all 0.3s;
-        }
-        button:hover:not(:disabled) {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(139,0,0,0.4);
-        }
-        button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        .code-container {
-            margin-top: 25px;
-            padding: 20px;
-            background: #0a0a0a;
-            border-radius: 15px;
-            border: 2px dashed #8b0000;
-            display: none;
-            animation: fadeIn 0.5s ease;
-        }
-        .code {
-            font-size: 42px;
-            font-weight: bold;
-            color: #ff4444;
-            background: #000;
-            padding: 20px;
-            border-radius: 10px;
-            letter-spacing: 8px;
-            margin: 15px 0;
-            font-family: monospace;
-        }
-        .footer {
-            margin-top: 25px;
-            font-size: 10px;
-            color: #555;
-        }
-        .info {
-            background: #1a1a2a;
-            padding: 15px;
-            border-radius: 10px;
-            font-size: 11px;
-            margin-top: 20px;
-            text-align: left;
-        }
-        .spinner {
-            display: inline-block;
-            width: 14px;
-            height: 14px;
-            border: 2px solid #fff;
-            border-top: 2px solid #8b0000;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin-right: 8px;
-            vertical-align: middle;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🥀 INSIDIOUS</h1>
-        <div class="subtitle">WhatsApp Bot - Pairing System V2</div>
-        
-        <div id="status" class="status waiting">
-            <span class="spinner"></span> Bot is starting...
-        </div>
-        
-        <div class="info">
-            <strong>📱 HOW TO CONNECT YOUR WHATSAPP:</strong><br><br>
-            1️⃣ Enter your phone number below (with country code)<br>
-            2️⃣ Click "Get Pairing Code"<br>
-            3️⃣ Open WhatsApp on your phone<br>
-            4️⃣ Go to <strong>Settings → Linked Devices</strong><br>
-            5️⃣ Tap <strong>"Link with Phone Number"</strong><br>
-            6️⃣ Enter the 8-digit code<br>
-            7️⃣ ✅ Bot will connect instantly!
-        </div>
-        
-        <input type="text" id="phone" placeholder="254712345678" value="254794376595" />
-        <button id="pairBtn" onclick="getPairingCode()" disabled>
-            🔗 Get Pairing Code
-        </button>
-        
-        <div id="codeContainer" class="code-container">
-            <div style="color: #8b0000; margin-bottom: 10px;">✦ YOUR 8-DIGIT PAIRING CODE ✦</div>
-            <div id="pairingCode" class="code"></div>
-            <small>Enter this code in WhatsApp → Linked Devices → Link with Phone Number</small>
-        </div>
-        
-        <div id="message" style="margin-top: 15px; font-size: 12px;"></div>
-        <div class="footer">Powered by INSIDIOUS BOT | Developed by STANYTZ</div>
-    </div>
-
-    <script>
-        let statusInterval;
-        
-        async function checkBotStatus() {
-            try {
-                const res = await fetch('/api/status');
-                const data = await res.json();
-                const statusDiv = document.getElementById('status');
-                const pairBtn = document.getElementById('pairBtn');
-                
-                if (data.ready) {
-                    statusDiv.innerHTML = '✅ BOT IS READY - You can get pairing code!';
-                    statusDiv.className = 'status ready';
-                    pairBtn.disabled = false;
-                    if (statusInterval) clearInterval(statusInterval);
-                } else if (data.connected) {
-                    statusDiv.innerHTML = '<span class="spinner"></span> Connecting to WhatsApp... Please wait';
-                    statusDiv.className = 'status waiting';
-                    pairBtn.disabled = true;
-                } else {
-                    statusDiv.innerHTML = '<span class="spinner"></span> Bot is starting... Please wait 30 seconds';
-                    statusDiv.className = 'status waiting';
-                    pairBtn.disabled = true;
-                }
-            } catch(e) {
-                console.log('Status check failed');
-            }
-        }
-        
-        async function getPairingCode() {
-            const phone = document.getElementById('phone').value;
-            if (!phone) {
-                showMessage('❌ Please enter your phone number', 'error');
-                return;
-            }
-            
-            const cleanPhone = phone.replace(/[^0-9]/g, '');
-            if (cleanPhone.length < 10 || cleanPhone.length > 15) {
-                showMessage('❌ Invalid phone number (10-15 digits required)', 'error');
-                return;
-            }
-            
-            const pairBtn = document.getElementById('pairBtn');
-            const originalText = pairBtn.textContent;
-            pairBtn.disabled = true;
-            pairBtn.textContent = '⏳ Generating Code...';
-            document.getElementById('codeContainer').style.display = 'none';
-            
-            try {
-                const res = await fetch('/api/pair?num=' + cleanPhone);
-                const data = await res.json();
-                
-                if (data.success) {
-                    document.getElementById('pairingCode').textContent = data.code;
-                    document.getElementById('codeContainer').style.display = 'block';
-                    showMessage('✅ Pairing code generated! Enter it in WhatsApp', 'success');
-                    
-                    setTimeout(() => {
-                        document.getElementById('codeContainer').style.display = 'none';
-                    }, 600000);
-                } else {
-                    showMessage('❌ ' + (data.error || 'Failed to generate code. Try again.'), 'error');
-                }
-            } catch(e) {
-                showMessage('❌ Connection error: ' + e.message, 'error');
-            } finally {
-                pairBtn.disabled = false;
-                pairBtn.textContent = originalText;
-            }
-        }
-        
-        function showMessage(msg, type) {
-            const msgDiv = document.getElementById('message');
-            msgDiv.style.color = type === 'error' ? '#f44336' : '#4caf50';
-            msgDiv.innerHTML = msg;
-            setTimeout(() => {
-                msgDiv.innerHTML = '';
-            }, 5000);
-        }
-        
-        checkBotStatus();
-        statusInterval = setInterval(checkBotStatus, 3000);
-        
-        document.getElementById('phone').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                getPairingCode();
-            }
-        });
-    </script>
-</body>
-</html>
-    `);
-});
-
-// ============= API ENDPOINTS =============
-app.get('/api/status', (req, res) => {
-    res.json({ 
-        ready: isReady && globalConn !== null,
-        connected: globalConn !== null,
-        uptime: process.uptime()
-    });
-});
-
-app.get('/api/pair', async (req, res) => {
-    const num = req.query.num;
-    if (!num) {
-        return res.status(400).json({ error: 'Phone number required' });
-    }
-    
-    try {
-        const cleanNum = num.replace(/[^0-9]/g, '');
-        
-        if (!globalConn || !isReady) {
-            return res.status(503).json({ error: 'Bot is connecting. Please wait 30 seconds.' });
-        }
-        
-        console.log(`\n📱 Generating pairing code for +${cleanNum}...`);
-        const code = await globalConn.requestPairingCode(cleanNum);
-        console.log(`✅ PAIRING CODE: ${code}`);
-        
-        res.json({ success: true, code: code });
-    } catch (err) {
-        console.error('Pairing error:', err.message);
-        res.status(500).json({ error: 'Failed to generate code. Try again.' });
-    }
-});
-
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: isReady ? 'healthy' : 'starting',
-        timestamp: new Date().toISOString()
-    });
-});
-
-// ============= WHATSAPP CONNECTION =============
-async function startBot() {
-    try {
-        console.log("\n🚀 STARTING INSIDIOUS BOT ON RENDER...");
-        
-        const { state, saveCreds } = await useMultiFileAuthState("session");
-        const { version } = await fetchLatestBaileysVersion();
-        
-        const conn = makeWASocket({
-            version,
-            auth: {
-                creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" })),
-            },
-            logger: pino({ level: "silent" }),
-            browser: ["INSIDIOUS BOT", "Chrome", "120.0.0"],
-            markOnlineOnConnect: true,
-            printQRInTerminal: false,
-            connectTimeoutMs: 60000,
-            defaultQueryTimeoutMs: 60000,
-            keepAliveIntervalMs: 30000,
-        });
-        
-        globalConn = conn;
-        
-        const connectionTimeout = setTimeout(() => {
-            if (!isReady) {
-                console.log("⚠️ Connection timeout! Retrying...");
-                conn.end();
-            }
-        }, 90000);
-        
-        conn.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect } = update;
-            
-            if (connection === 'open') {
-                clearTimeout(connectionTimeout);
-                isReady = true;
-                retryCount = 0;
-                console.log("\n✅✅✅ INSIDIOUS IS ONLINE! ✅✅✅\n");
-                console.log(`🌐 WEB PANEL: https://insidious-1.onrender.com`);
-                
-                try {
-                    const ownerJid = config.ownerNumber + '@s.whatsapp.net';
-                    await conn.sendMessage(ownerJid, { 
-                        text: `✅ INSIDIOUS BOT IS ONLINE!\n🌐 https://insidious-1.onrender.com`
-                    });
-                } catch(e) {}
-            }
-            
-            if (connection === 'close') {
-                clearTimeout(connectionTimeout);
-                isReady = false;
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                console.log(`⚠️ Connection closed. Code: ${statusCode}`);
-                
-                if (statusCode === DisconnectReason.loggedOut) {
-                    const fs = require('fs-extra');
-                    await fs.remove('./session').catch(() => {});
-                    setTimeout(startBot, 5000);
-                } else if (retryCount < 5) {
-                    retryCount++;
-                    setTimeout(startBot, 10000);
-                }
-            }
-        });
-        
-        conn.ev.on('creds.update', saveCreds);
-        
-        conn.ev.on('messages.upsert', async (m) => {
-            try {
-                const handler = require('./handler');
-                await handler(conn, m);
-            } catch(e) {}
-        });
-        
-        if (config.anticall) {
-            conn.ev.on('call', async (calls) => {
-                for (let call of calls) {
-                    if (call.status === 'offer') {
-                        try {
-                            await conn.rejectCall(call.id, call.from);
-                        } catch(e) {}
-                    }
-                }
-            });
-        }
-        
-    } catch(err) {
-        console.error("Start error:", err);
-        if (retryCount < 5) {
-            retryCount++;
-            setTimeout(startBot, 10000);
-        }
-    }
-}
-
-// Start bot
-startBot();
-
-// Start server - CRITICAL FIX: Don't use HOST, just listen on PORT
-app.listen(PORT, () => {
-    console.log(`\n✅ SERVER RUNNING ON PORT ${PORT}`);
-    console.log(`🌐 WEB DASHBOARD: https://insidious-1.onrender.com`);
-    console.log("📱 PAIRING CODE SYSTEM ACTIVE");
-    console.log("⏳ WAITING FOR WHATSAPP CONNECTION...\n");
-});// Database connection
-mongoose.connect(config.mongodb, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-    serverSelectionTimeoutMS: 5000,
-}).then(() => console.log("✅ Database Connected")).catch(err => console.log("DB Error:", err.message));
-
-// ============= WEB PAGE FOR PAIRING =============
-app.get('/', (req, res) => {
-    res.send(`
-<!DOCTYPE html>
-<html>
-<head>
-    <title>INSIDIOUS BOT - Pairing</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
-            font-family: 'Courier New', monospace;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            margin: 0;
-            padding: 20px;
-        }
-        .container {
-            background: rgba(0,0,0,0.95);
-            border-radius: 20px;
-            padding: 40px;
-            max-width: 500px;
-            width: 100%;
-            text-align: center;
-            border: 2px solid #8b0000;
-            box-shadow: 0 0 30px rgba(139,0,0,0.3);
-            animation: fadeIn 0.5s ease;
-        }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(-20px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        h1 { 
-            color: #8b0000; 
-            font-size: 2.5em; 
-            margin-bottom: 10px;
-            text-shadow: 0 0 10px rgba(139,0,0,0.5);
-        }
-        .subtitle {
-            color: #888;
-            margin-bottom: 20px;
-            font-size: 12px;
-        }
-        .status {
-            margin: 20px 0;
-            padding: 12px;
-            border-radius: 10px;
-            font-size: 14px;
-            font-weight: bold;
-        }
-        .ready { 
-            background: #1a3a1a; 
-            color: #4caf50; 
-            border-left: 4px solid #4caf50;
-        }
-        .waiting { 
-            background: #3a2a1a; 
-            color: #ff9800; 
-            border-left: 4px solid #ff9800;
-        }
-        .error { 
-            background: #3a1a1a; 
-            color: #f44336; 
-            border-left: 4px solid #f44336;
-        }
-        input {
-            width: 100%;
-            padding: 15px;
-            margin: 15px 0;
-            background: #2a2a2a;
-            border: 2px solid #8b0000;
-            color: white;
-            border-radius: 10px;
-            font-size: 18px;
-            text-align: center;
-            transition: all 0.3s;
-        }
-        input:focus {
-            outline: none;
-            border-color: #ff0000;
-            box-shadow: 0 0 10px rgba(255,0,0,0.3);
-        }
-        button {
-            background: linear-gradient(135deg, #8b0000 0%, #cc0000 100%);
-            color: white;
-            padding: 15px;
-            border: none;
-            border-radius: 10px;
-            font-size: 18px;
-            font-weight: bold;
-            cursor: pointer;
-            width: 100%;
-            margin-top: 10px;
-            transition: all 0.3s;
-        }
-        button:hover:not(:disabled) {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(139,0,0,0.4);
-        }
-        button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        .code-container {
-            margin-top: 25px;
-            padding: 20px;
-            background: #0a0a0a;
-            border-radius: 15px;
-            border: 2px dashed #8b0000;
-            display: none;
-            animation: fadeIn 0.5s ease;
-        }
-        .code {
-            font-size: 42px;
-            font-weight: bold;
-            color: #ff4444;
-            background: #000;
-            padding: 20px;
-            border-radius: 10px;
-            letter-spacing: 8px;
-            margin: 15px 0;
-            font-family: monospace;
-        }
-        .footer {
-            margin-top: 25px;
-            font-size: 10px;
-            color: #555;
-        }
-        .info {
-            background: #1a1a2a;
-            padding: 15px;
-            border-radius: 10px;
-            font-size: 11px;
-            margin-top: 20px;
-            text-align: left;
-        }
-        .spinner {
-            display: inline-block;
-            width: 14px;
-            height: 14px;
-            border: 2px solid #fff;
-            border-top: 2px solid #8b0000;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin-right: 8px;
-            vertical-align: middle;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        .success-text {
-            color: #4caf50;
-        }
-        .error-text {
-            color: #f44336;
-        }
-        .url-box {
-            background: #0a0a0a;
-            padding: 10px;
-            border-radius: 8px;
-            margin-top: 15px;
-            font-size: 11px;
-            word-break: break-all;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🥀 INSIDIOUS</h1>
-        <div class="subtitle">WhatsApp Bot - Pairing System V2</div>
-        
-        <div id="status" class="status waiting">
-            <span class="spinner"></span> Bot is starting...
-        </div>
-        
-        <div class="url-box" id="urlDisplay">
-            🔗 Connecting to Render...
-        </div>
-        
-        <div class="info">
-            <strong>📱 HOW TO CONNECT YOUR WHATSAPP:</strong><br><br>
-            1️⃣ Enter your phone number below (with country code)<br>
-            2️⃣ Click "Get Pairing Code"<br>
-            3️⃣ Open WhatsApp on your phone<br>
-            4️⃣ Go to <strong>Settings → Linked Devices</strong><br>
-            5️⃣ Tap <strong>"Link with Phone Number"</strong><br>
-            6️⃣ Enter the 8-digit code<br>
-            7️⃣ ✅ Bot will connect instantly!
-        </div>
-        
-        <input type="text" id="phone" placeholder="254712345678" value="254794376595" />
-        <button id="pairBtn" onclick="getPairingCode()" disabled>
-            🔗 Get Pairing Code
-        </button>
-        
-        <div id="codeContainer" class="code-container">
-            <div style="color: #8b0000; margin-bottom: 10px;">✦ YOUR 8-DIGIT PAIRING CODE ✦</div>
-            <div id="pairingCode" class="code"></div>
-            <small>Enter this code in WhatsApp → Linked Devices → Link with Phone Number</small>
-        </div>
-        
-        <div id="message" style="margin-top: 15px; font-size: 12px;"></div>
-        <div class="footer">Powered by INSIDIOUS BOT | Developed by STANYTZ</div>
-    </div>
-
-    <script>
-        let statusInterval;
-        
-        // Show current URL
-        document.getElementById('urlDisplay').innerHTML = '🌐 Current URL: ' + window.location.href;
-        
-        async function checkBotStatus() {
-            try {
-                const res = await fetch('/api/status');
-                const data = await res.json();
-                const statusDiv = document.getElementById('status');
-                const pairBtn = document.getElementById('pairBtn');
-                
-                if (data.ready) {
-                    statusDiv.innerHTML = '✅ BOT IS READY - You can get pairing code!';
-                    statusDiv.className = 'status ready';
-                    pairBtn.disabled = false;
-                    if (statusInterval) clearInterval(statusInterval);
-                } else if (data.connected) {
-                    statusDiv.innerHTML = '<span class="spinner"></span> Connecting to WhatsApp... Please wait';
-                    statusDiv.className = 'status waiting';
-                    pairBtn.disabled = true;
-                } else {
-                    statusDiv.innerHTML = '<span class="spinner"></span> Bot is starting... Please wait 30 seconds';
-                    statusDiv.className = 'status waiting';
-                    pairBtn.disabled = true;
-                }
-            } catch(e) {
-                console.log('Status check failed');
-                document.getElementById('status').innerHTML = '⚠️ Waiting for server...';
-            }
-        }
-        
-        async function getPairingCode() {
-            const phone = document.getElementById('phone').value;
-            if (!phone) {
-                showMessage('❌ Please enter your phone number', 'error');
-                return;
-            }
-            
-            const cleanPhone = phone.replace(/[^0-9]/g, '');
-            if (cleanPhone.length < 10 || cleanPhone.length > 15) {
-                showMessage('❌ Invalid phone number (10-15 digits required)', 'error');
-                return;
-            }
-            
-            const pairBtn = document.getElementById('pairBtn');
-            const originalText = pairBtn.textContent;
-            pairBtn.disabled = true;
-            pairBtn.textContent = '⏳ Generating Code...';
-            document.getElementById('codeContainer').style.display = 'none';
-            
-            try {
-                const res = await fetch('/api/pair?num=' + cleanPhone);
-                const data = await res.json();
-                
-                if (data.success) {
-                    document.getElementById('pairingCode').textContent = data.code;
-                    document.getElementById('codeContainer').style.display = 'block';
-                    showMessage('✅ Pairing code generated! Enter it in WhatsApp', 'success');
-                    
-                    // Auto hide after 10 minutes
-                    setTimeout(() => {
-                        document.getElementById('codeContainer').style.display = 'none';
-                    }, 600000);
-                } else {
-                    showMessage('❌ ' + (data.error || 'Failed to generate code. Try again.'), 'error');
-                }
-            } catch(e) {
-                showMessage('❌ Connection error: ' + e.message, 'error');
-            } finally {
-                pairBtn.disabled = false;
-                pairBtn.textContent = originalText;
-            }
-        }
-        
-        function showMessage(msg, type) {
-            const msgDiv = document.getElementById('message');
-            msgDiv.style.color = type === 'error' ? '#f44336' : '#4caf50';
-            msgDiv.innerHTML = msg;
-            setTimeout(() => {
-                msgDiv.innerHTML = '';
-            }, 5000);
-        }
-        
-        // Check status every 3 seconds
-        checkBotStatus();
-        statusInterval = setInterval(checkBotStatus, 3000);
-        
-        // Enter key support
-        document.getElementById('phone').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                getPairingCode();
-            }
-        });
-    </script>
-</body>
-</html>
-    `);
-});
-
-// ============= API ENDPOINTS =============
-app.get('/api/status', (req, res) => {
-    res.json({ 
-        ready: isReady && globalConn !== null,
-        connected: globalConn !== null,
-        uptime: process.uptime()
-    });
-});
-
-app.get('/api/pair', async (req, res) => {
-    const num = req.query.num;
-    if (!num) {
-        return res.status(400).json({ error: 'Phone number required' });
-    }
-    
-    try {
-        const cleanNum = num.replace(/[^0-9]/g, '');
-        
-        if (!globalConn || !isReady) {
-            return res.status(503).json({ error: 'Bot is connecting. Please wait 30 seconds.' });
-        }
-        
-        console.log(`\n📱 Generating pairing code for +${cleanNum}...`);
-        const code = await globalConn.requestPairingCode(cleanNum);
-        console.log(`✅ PAIRING CODE: ${code}`);
-        console.log(`📝 Tell user to enter this code in WhatsApp\n`);
-        
-        res.json({ success: true, code: code });
-    } catch (err) {
-        console.error('Pairing error:', err.message);
-        res.status(500).json({ error: 'Failed to generate code. Try again.' });
-    }
-});
-
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: isReady ? 'healthy' : 'starting',
-        timestamp: new Date().toISOString(),
-        uptime: process.uptime()
-    });
-});
-
-// ============= WHATSAPP CONNECTION =============
-async function startBot() {
-    try {
-        console.log("\n🚀 STARTING INSIDIOUS BOT ON RENDER...");
-        console.log("⏳ CONNECTING TO WHATSAPP...");
-        
-        const { state, saveCreds } = await useMultiFileAuthState("session");
-        const { version } = await fetchLatestBaileysVersion();
-        
-        const conn = makeWASocket({
-            version,
-            auth: {
-                creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" })),
-            },
-            logger: pino({ level: "silent" }),
-            browser: ["INSIDIOUS BOT", "Chrome", "120.0.0"],
-            markOnlineOnConnect: true,
-            printQRInTerminal: false,
-            connectTimeoutMs: 60000,
-            defaultQueryTimeoutMs: 60000,
-            keepAliveIntervalMs: 30000,
-        });
-        
-        globalConn = conn;
-        
-        // Connection timeout handler
-        const connectionTimeout = setTimeout(() => {
-            if (!isReady) {
-                console.log("⚠️ Connection timeout! Retrying...");
-                conn.end();
-            }
-        }, 90000);
-        
-        conn.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect } = update;
-            
-            if (connection === 'open') {
-                clearTimeout(connectionTimeout);
-                isReady = true;
-                retryCount = 0;
-                console.log("\n✅✅✅ INSIDIOUS IS ONLINE! ✅✅✅\n");
-                console.log(`🌐 WEB PANEL: https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'insidious-1.onrender.com'}`);
-                console.log("📱 YOU CAN NOW GENERATE PAIRING CODES!\n");
-                
-                // Notify owner
-                try {
-                    const ownerJid = config.ownerNumber + '@s.whatsapp.net';
-                    await conn.sendMessage(ownerJid, { 
-                        text: `✅ INSIDIOUS BOT IS ONLINE!\n🌐 https://insidious-1.onrender.com\n\nUse the web panel to pair new devices.`
-                    });
-                    console.log("✅ Owner notified");
-                } catch(e) {
-                    console.log("⚠️ Owner not notified (number not saved in contacts)");
-                }
-            }
-            
-            if (connection === 'close') {
-                clearTimeout(connectionTimeout);
-                isReady = false;
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                console.log(`⚠️ Connection closed. Code: ${statusCode}`);
-                
-                if (statusCode === DisconnectReason.loggedOut) {
-                    console.log("❌ Session expired! Deleting session...");
-                    const fs = require('fs-extra');
-                    await fs.remove('./session').catch(() => {});
-                    setTimeout(startBot, 5000);
-                } else if (retryCount < 5) {
-                    retryCount++;
-                    const delay = 10000;
-                    console.log(`🔄 Reconnecting in ${delay/1000}s... (Attempt ${retryCount}/5)`);
-                    setTimeout(startBot, delay);
-                }
-            }
-        });
-        
-        conn.ev.on('creds.update', saveCreds);
-        
-        // Message handler
-        conn.ev.on('messages.upsert', async (m) => {
-            try {
-                const handler = require('./handler');
-                await handler(conn, m);
-            } catch(e) {
-                console.error("Handler error:", e.message);
-            }
-        });
-        
-        // Anti-call
-        if (config.anticall) {
-            conn.ev.on('call', async (calls) => {
-                for (let call of calls) {
-                    if (call.status === 'offer') {
-                        try {
-                            await conn.rejectCall(call.id, call.from);
-                            console.log(`📞 Rejected call from ${call.from}`);
-                        } catch(e) {}
-                    }
-                }
-            });
-        }
-        
-    } catch(err) {
-        console.error("Start error:", err);
-        if (retryCount < 5) {
-            retryCount++;
-            setTimeout(startBot, 10000);
-        }
-    }
-}
-
-// Start bot
-startBot();
-
-// Start web server - IMPORTANT for Render
-app.listen(PORT, HOST, () => {
-    console.log(`\n✅ SERVER RUNNING ON PORT ${PORT}`);
-    console.log(`🌐 WEB DASHBOARD: http://${HOST}:${PORT}`);
-    console.log(`📱 PUBLIC URL: https://insidious-1.onrender.com`);
-    console.log("📱 PAIRING CODE SYSTEM ACTIVE");
-    console.log("⏳ WAITING FOR WHATSAPP CONNECTION...");
-    console.log("💡 Once connected, use the web page to get pairing code\n");
-});
-
-// Handle graceful shutdown
-process.on('SIGTERM', () => {
-    console.log('SIGTERM received, closing server...');
-    process.exit(0);
-});
-
-process.on('SIGINT', () => {
-    console.log('SIGINT received, closing server...');
-    process.exit(0);
-});// Database connection
-mongoose.connect(config.mongodb, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-    serverSelectionTimeoutMS: 5000,
-}).then(() => console.log("✅ Database Connected")).catch(err => console.log("DB Error:", err.message));
-
-// ============= WEB PAGE FOR PAIRING =============
-app.get('/', (req, res) => {
-    res.send(`
-<!DOCTYPE html>
-<html>
-<head>
-    <title>INSIDIOUS BOT - Pairing</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
-            font-family: 'Courier New', monospace;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            margin: 0;
-            padding: 20px;
-        }
-        .container {
-            background: rgba(0,0,0,0.95);
-            border-radius: 20px;
-            padding: 40px;
-            max-width: 500px;
-            width: 100%;
-            text-align: center;
-            border: 2px solid #8b0000;
-            box-shadow: 0 0 30px rgba(139,0,0,0.3);
-            animation: fadeIn 0.5s ease;
-        }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(-20px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        h1 { 
-            color: #8b0000; 
-            font-size: 2.5em; 
-            margin-bottom: 10px;
-            text-shadow: 0 0 10px rgba(139,0,0,0.5);
-        }
-        .subtitle {
-            color: #888;
-            margin-bottom: 20px;
-            font-size: 12px;
-        }
-        .status {
-            margin: 20px 0;
-            padding: 12px;
-            border-radius: 10px;
-            font-size: 14px;
-            font-weight: bold;
-        }
-        .ready { 
-            background: #1a3a1a; 
-            color: #4caf50; 
-            border-left: 4px solid #4caf50;
-        }
-        .waiting { 
-            background: #3a2a1a; 
-            color: #ff9800; 
-            border-left: 4px solid #ff9800;
-        }
-        .error { 
-            background: #3a1a1a; 
-            color: #f44336; 
-            border-left: 4px solid #f44336;
-        }
-        input {
-            width: 100%;
-            padding: 15px;
-            margin: 15px 0;
-            background: #2a2a2a;
-            border: 2px solid #8b0000;
-            color: white;
-            border-radius: 10px;
-            font-size: 18px;
-            text-align: center;
-            transition: all 0.3s;
-        }
-        input:focus {
-            outline: none;
-            border-color: #ff0000;
-            box-shadow: 0 0 10px rgba(255,0,0,0.3);
-        }
-        button {
-            background: linear-gradient(135deg, #8b0000 0%, #cc0000 100%);
-            color: white;
-            padding: 15px;
-            border: none;
-            border-radius: 10px;
-            font-size: 18px;
-            font-weight: bold;
-            cursor: pointer;
-            width: 100%;
-            margin-top: 10px;
-            transition: all 0.3s;
-        }
-        button:hover:not(:disabled) {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(139,0,0,0.4);
-        }
-        button:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        .code-container {
-            margin-top: 25px;
-            padding: 20px;
-            background: #0a0a0a;
-            border-radius: 15px;
-            border: 2px dashed #8b0000;
-            display: none;
-            animation: fadeIn 0.5s ease;
-        }
-        .code {
-            font-size: 42px;
-            font-weight: bold;
-            color: #ff4444;
-            background: #000;
-            padding: 20px;
-            border-radius: 10px;
-            letter-spacing: 8px;
-            margin: 15px 0;
-            font-family: monospace;
-        }
-        .footer {
-            margin-top: 25px;
-            font-size: 10px;
-            color: #555;
-        }
-        .info {
-            background: #1a1a2a;
-            padding: 15px;
-            border-radius: 10px;
-            font-size: 11px;
-            margin-top: 20px;
-            text-align: left;
-        }
-        .spinner {
-            display: inline-block;
-            width: 14px;
-            height: 14px;
-            border: 2px solid #fff;
-            border-top: 2px solid #8b0000;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin-right: 8px;
-            vertical-align: middle;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-        .success-text {
-            color: #4caf50;
-        }
-        .error-text {
-            color: #f44336;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🥀 INSIDIOUS</h1>
-        <div class="subtitle">WhatsApp Bot - Pairing System V2</div>
-        
-        <div id="status" class="status waiting">
-            <span class="spinner"></span> Bot is starting...
-        </div>
-        
-        <div class="info">
-            <strong>📱 HOW TO CONNECT YOUR WHATSAPP:</strong><br><br>
-            1️⃣ Enter your phone number below (with country code)<br>
-            2️⃣ Click "Get Pairing Code"<br>
-            3️⃣ Open WhatsApp on your phone<br>
-            4️⃣ Go to <strong>Settings → Linked Devices</strong><br>
-            5️⃣ Tap <strong>"Link with Phone Number"</strong><br>
-            6️⃣ Enter the 8-digit code<br>
-            7️⃣ ✅ Bot will connect instantly!
-        </div>
-        
-        <input type="text" id="phone" placeholder="254712345678" value="254794376595" />
-        <button id="pairBtn" onclick="getPairingCode()" disabled>
-            🔗 Get Pairing Code
-        </button>
-        
-        <div id="codeContainer" class="code-container">
-            <div style="color: #8b0000; margin-bottom: 10px;">✦ YOUR 8-DIGIT PAIRING CODE ✦</div>
-            <div id="pairingCode" class="code"></div>
-            <small>Enter this code in WhatsApp → Linked Devices → Link with Phone Number</small>
-        </div>
-        
-        <div id="message" style="margin-top: 15px; font-size: 12px;"></div>
-        <div class="footer">Powered by INSIDIOUS BOT | Developed by STANYTZ</div>
-    </div>
-
-    <script>
-        let statusInterval;
-        
-        async function checkBotStatus() {
-            try {
-                const res = await fetch('/api/status');
-                const data = await res.json();
-                const statusDiv = document.getElementById('status');
-                const pairBtn = document.getElementById('pairBtn');
-                
-                if (data.ready) {
-                    statusDiv.innerHTML = '✅ BOT IS READY - You can get pairing code!';
-                    statusDiv.className = 'status ready';
-                    pairBtn.disabled = false;
-                    if (statusInterval) clearInterval(statusInterval);
-                } else if (data.connected) {
-                    statusDiv.innerHTML = '<span class="spinner"></span> Connecting to WhatsApp... Please wait';
-                    statusDiv.className = 'status waiting';
-                    pairBtn.disabled = true;
-                } else {
-                    statusDiv.innerHTML = '<span class="spinner"></span> Bot is starting... Please wait 30 seconds';
-                    statusDiv.className = 'status waiting';
-                    pairBtn.disabled = true;
-                }
-            } catch(e) {
-                console.log('Status check failed');
-            }
-        }
-        
-        async function getPairingCode() {
-            const phone = document.getElementById('phone').value;
-            if (!phone) {
-                showMessage('❌ Please enter your phone number', 'error');
-                return;
-            }
-            
-            const cleanPhone = phone.replace(/[^0-9]/g, '');
-            if (cleanPhone.length < 10 || cleanPhone.length > 15) {
-                showMessage('❌ Invalid phone number (10-15 digits required)', 'error');
-                return;
-            }
-            
-            const pairBtn = document.getElementById('pairBtn');
-            const originalText = pairBtn.textContent;
-            pairBtn.disabled = true;
-            pairBtn.textContent = '⏳ Generating Code...';
-            document.getElementById('codeContainer').style.display = 'none';
-            
-            try {
-                const res = await fetch('/api/pair?num=' + cleanPhone);
-                const data = await res.json();
-                
-                if (data.success) {
-                    document.getElementById('pairingCode').textContent = data.code;
-                    document.getElementById('codeContainer').style.display = 'block';
-                    showMessage('✅ Pairing code generated! Enter it in WhatsApp', 'success');
-                    
-                    // Auto hide after 10 minutes
-                    setTimeout(() => {
-                        document.getElementById('codeContainer').style.display = 'none';
-                    }, 600000);
-                } else {
-                    showMessage('❌ ' + (data.error || 'Failed to generate code. Try again.'), 'error');
-                }
-            } catch(e) {
-                showMessage('❌ Connection error. Make sure the bot is running.', 'error');
-            } finally {
-                pairBtn.disabled = false;
-                pairBtn.textContent = originalText;
-            }
-        }
-        
-        function showMessage(msg, type) {
-            const msgDiv = document.getElementById('message');
-            msgDiv.style.color = type === 'error' ? '#f44336' : '#4caf50';
-            msgDiv.innerHTML = msg;
-            setTimeout(() => {
-                msgDiv.innerHTML = '';
-            }, 5000);
-        }
-        
-        // Check status every 3 seconds
-        checkBotStatus();
-        statusInterval = setInterval(checkBotStatus, 3000);
-        
-        // Enter key support
-        document.getElementById('phone').addEventListener('keypress', function(e) {
-            if (e.key === 'Enter') {
-                getPairingCode();
-            }
-        });
-    </script>
-</body>
-</html>
-    `);
-});
-
-// ============= API ENDPOINTS =============
-app.get('/api/status', (req, res) => {
-    res.json({ 
-        ready: isReady && globalConn !== null,
-        connected: globalConn !== null,
-        uptime: process.uptime()
-    });
-});
-
-app.get('/api/pair', async (req, res) => {
-    const num = req.query.num;
-    if (!num) {
-        return res.status(400).json({ error: 'Phone number required' });
-    }
-    
-    try {
-        const cleanNum = num.replace(/[^0-9]/g, '');
-        
-        if (!globalConn || !isReady) {
-            return res.status(503).json({ error: 'Bot is connecting. Please wait 30 seconds.' });
-        }
-        
-        console.log(`\n📱 Generating pairing code for +${cleanNum}...`);
-        const code = await globalConn.requestPairingCode(cleanNum);
-        console.log(`✅ PAIRING CODE: ${code}`);
-        console.log(`📝 Tell user to enter this code in WhatsApp\n`);
-        
-        res.json({ success: true, code: code });
-    } catch (err) {
-        console.error('Pairing error:', err.message);
-        res.status(500).json({ error: 'Failed to generate code. Try again.' });
-    }
-});
-
-app.get('/health', (req, res) => {
-    res.json({ 
-        status: isReady ? 'healthy' : 'starting',
-        timestamp: new Date().toISOString()
-    });
-});
-
-// ============= WHATSAPP CONNECTION =============
-async function startBot() {
-    try {
-        console.log("\n🚀 STARTING INSIDIOUS BOT ON RENDER...");
-        console.log("⏳ CONNECTING TO WHATSAPP...");
-        
-        const { state, saveCreds } = await useMultiFileAuthState("session");
-        const { version } = await fetchLatestBaileysVersion();
-        
-        const conn = makeWASocket({
-            version,
-            auth: {
-                creds: state.creds,
-                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" })),
-            },
-            logger: pino({ level: "silent" }),
-            browser: ["INSIDIOUS BOT", "Chrome", "120.0.0"],
-            markOnlineOnConnect: true,
-            printQRInTerminal: false,
-            connectTimeoutMs: 60000,
-            defaultQueryTimeoutMs: 60000,
-            keepAliveIntervalMs: 30000,
-        });
-        
-        globalConn = conn;
-        
-        // Connection timeout handler
-        const connectionTimeout = setTimeout(() => {
-            if (!isReady) {
-                console.log("⚠️ Connection timeout! Retrying...");
-                conn.end();
-            }
-        }, 90000);
-        
-        conn.ev.on('connection.update', async (update) => {
-            const { connection, lastDisconnect } = update;
-            
-            if (connection === 'open') {
-                clearTimeout(connectionTimeout);
-                isReady = true;
-                retryCount = 0;
-                console.log("\n✅✅✅ INSIDIOUS IS ONLINE! ✅✅✅\n");
-                console.log(`🌐 WEB PANEL: https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost'}:${PORT}`);
-                console.log("📱 YOU CAN NOW GENERATE PAIRING CODES!\n");
-                
-                // Notify owner
-                try {
-                    const ownerJid = config.ownerNumber + '@s.whatsapp.net';
-                    await conn.sendMessage(ownerJid, { 
-                        text: `✅ INSIDIOUS BOT IS ONLINE!\n🌐 https://${process.env.RENDER_EXTERNAL_HOSTNAME || 'localhost'}:${PORT}`
-                    });
-                    console.log("✅ Owner notified");
-                } catch(e) {
-                    console.log("⚠️ Owner not notified (number not saved)");
-                }
-            }
-            
-            if (connection === 'close') {
-                clearTimeout(connectionTimeout);
-                isReady = false;
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                console.log(`⚠️ Connection closed. Code: ${statusCode}`);
-                
-                if (statusCode === DisconnectReason.loggedOut) {
-                    console.log("❌ Session expired! Deleting session...");
-                    const fs = require('fs-extra');
-                    await fs.remove('./session').catch(() => {});
-                    setTimeout(startBot, 5000);
-                } else if (retryCount < 5) {
-                    retryCount++;
-                    const delay = 10000;
-                    console.log(`🔄 Reconnecting in ${delay/1000}s... (Attempt ${retryCount}/5)`);
-                    setTimeout(startBot, delay);
-                }
-            }
-        });
-        
-        conn.ev.on('creds.update', saveCreds);
-        
-        // Message handler
-        conn.ev.on('messages.upsert', async (m) => {
-            try {
-                const handler = require('./handler');
-                await handler(conn, m);
-            } catch(e) {
-                console.error("Handler error:", e.message);
-            }
-        });
-        
-        // Anti-call
-        if (config.anticall) {
-            conn.ev.on('call', async (calls) => {
-                for (let call of calls) {
-                    if (call.status === 'offer') {
-                        try {
-                            await conn.rejectCall(call.id, call.from);
-                            console.log(`📞 Rejected call from ${call.from}`);
-                        } catch(e) {}
-                    }
-                }
-            });
-        }
-        
-    } catch(err) {
-        console.error("Start error:", err);
-        if (retryCount < 5) {
-            retryCount++;
-            setTimeout(startBot, 10000);
-        }
-    }
-}
-
-// Start bot
-startBot();
+// Start the bot
+let conn;
+startInsidious().then(c => {
+    conn = c;
+    global.conn = conn;
+}).catch(console.error);
 
 // Start web server
-app.listen(PORT, HOST, () => {
-    console.log(`\n🌐 WEB DASHBOARD: http://${HOST}:${PORT}`);
-    console.log("📱 PAIRING CODE SYSTEM ACTIVE");
-    console.log("⏳ WAITING FOR WHATSAPP CONNECTION...");
-    console.log("💡 Once connected, use the web page to get pairing code\n");
-});
+app.listen(PORT, () => console.log(`🌐 Dashboard running on port ${PORT}`));
+
+module.exports = { startInsidious };
