@@ -1,10 +1,21 @@
 services:
   - type: web
     name: insidious-bot
-    runtime: node
-    buildCommand: npm install
-    startCommand: npm start
+    env: node
+    region: oregon
     plan: free
+    buildCommand: npm install
+    startCommand: node index.js
     envVars:
       - key: MONGODB_URI
         sync: false
+      - key: OWNER_NUMBER
+        sync: false
+      - key: BOT_NAME
+        value: INSIDIOUS
+      - key: PORT
+        value: 3000
+    autoDeploy: true
+    healthCheckPath: /
+    domains:
+      - insidious-bot.onrender.com
