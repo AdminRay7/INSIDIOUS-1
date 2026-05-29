@@ -22,104 +22,308 @@ const PORT = process.env.PORT || 3000;
 // IMPORT DATABASE MODELS
 const { User, Group, ChannelSubscriber } = require('./database/models');
 
-// Global variables
-let pendingPairRequest = null;
+// DATABASE CONNECTION - FIXED
+const MONGODB_URI = config.mongodb || process.env.MONGODB_URI;
+console.log(fancy("🔄 Connecting to MongoDB..."));
+mongoose.connect(MONGODB_URI, { 
+    useNewUrlParser: true, 
+    useUnifiedTopology: true,
+    serverSelectionTimeoutMS: 30000,
+    connectTimeoutMS: 30000
+})
+.then(() => console.log(fancy("✅ database connected: insidious is eternal.")))
+.catch(err => console.error("DB Connection Error:", err));
 
-// DATABASE CONNECTION
-mongoose.connect(config.mongodb, { useNewUrlParser: true, useUnifiedTopology: true })
-    .then(() => console.log(fancy("🥀 database connected: insidious is eternal.")))
-    .catch(err => console.error("DB Connection Error:", err));
-
-// WEB PAIRING DASHBOARD
+// Simple HTML page for pairing
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    res.send(`
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>INSIDIOUS - WhatsApp Bot</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            padding: 20px;
+        }
+        .container {
+            background: rgba(0,0,0,0.85);
+            backdrop-filter: blur(10px);
+            border-radius: 28px;
+            padding: 40px;
+            max-width: 500px;
+            width: 100%;
+            text-align: center;
+            border: 1px solid rgba(255,51,102,0.3);
+            box-shadow: 0 0 40px rgba(255,51,102,0.1);
+        }
+        h1 {
+            font-size: 2.8em;
+            background: linear-gradient(135deg, #ff3366, #ff6633);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+        .subtitle { color: #888; margin-bottom: 30px; font-size: 0.9em; }
+        .status {
+            display: inline-block;
+            padding: 6px 18px;
+            border-radius: 20px;
+            font-size: 0.8em;
+            margin-bottom: 20px;
+        }
+        .status.online { background: #00ff8822; color: #00ff88; border: 1px solid #00ff88; }
+        .status.offline { background: #ff336622; color: #ff3366; border: 1px solid #ff3366; }
+        .pair-box {
+            background: #1a1a1a;
+            padding: 30px;
+            border-radius: 20px;
+            margin: 20px 0;
+        }
+        .pair-box h3 { margin-bottom: 15px; color: #ff3366; }
+        .pair-box p { color: #888; margin-bottom: 20px; font-size: 0.85em; }
+        input {
+            width: 100%;
+            padding: 14px;
+            background: #2a2a2a;
+            border: 1px solid #3a3a3a;
+            border-radius: 12px;
+            color: white;
+            font-size: 1em;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+        input:focus { outline: none; border-color: #ff3366; }
+        button {
+            background: linear-gradient(135deg, #ff3366, #ff6633);
+            color: white;
+            border: none;
+            padding: 14px 30px;
+            border-radius: 12px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: transform 0.2s;
+            width: 100%;
+            font-weight: bold;
+        }
+        button:hover { transform: translateY(-2px); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        .result {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 12px;
+            display: none;
+            font-size: 0.9em;
+            word-break: break-all;
+        }
+        .result.success {
+            background: #00ff8822;
+            border: 1px solid #00ff88;
+            display: block;
+        }
+        .result.error {
+            background: #ff336622;
+            border: 1px solid #ff3366;
+            display: block;
+        }
+        .code-display {
+            font-size: 1.8em;
+            font-weight: bold;
+            letter-spacing: 4px;
+            margin: 15px 0;
+            font-family: monospace;
+        }
+        .footer { margin-top: 30px; font-size: 0.7em; color: #555; }
+        .loading { animation: pulse 1s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🥀 INSIDIOUS</h1>
+        <div class="subtitle">WhatsApp Bot v2.1.1</div>
+        <div class="status offline" id="status">● OFFLINE</div>
+        
+        <div class="pair-box">
+            <h3>🔗 Connect Your Device</h3>
+            <p>Enter your WhatsApp number (without + or spaces)</p>
+            <input type="tel" id="phoneNumber" placeholder="Example: 2557xxxxxxxx" />
+            <button onclick="pairDevice()" id="pairBtn">Get Pairing Code</button>
+            <div id="result"></div>
+        </div>
+        
+        <div class="footer">
+            Developed by StanyTZ | Powered by Baileys
+        </div>
+    </div>
+
+    <script>
+        async function pairDevice() {
+            const number = document.getElementById('phoneNumber').value;
+            if (!number) {
+                showResult('Please enter your phone number!', 'error');
+                return;
+            }
+            
+            const btn = document.getElementById('pairBtn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Processing...';
+            
+            try {
+                const response = await fetch('/api/pair?num=' + number);
+                const data = await response.json();
+                
+                if (data.code) {
+                    showResult('✅ <strong>Your pairing code:</strong><br><div class="code-display">' + data.code + '</div><br>📱 Open WhatsApp → Settings → Linked Devices → Link with phone number<br>🔑 Enter this code', 'success');
+                } else {
+                    showResult('❌ ' + (data.error || 'Pairing failed. Try again.'), 'error');
+                }
+            } catch (error) {
+                showResult('❌ Network error. Please try again.', 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Get Pairing Code';
+            }
+        }
+        
+        function showResult(message, type) {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = '<div class="result ' + type + '">' + message + '</div>';
+        }
+        
+        async function checkStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                const statusDiv = document.getElementById('status');
+                if (data.connected) {
+                    statusDiv.className = 'status online';
+                    statusDiv.innerHTML = '● ONLINE - Ready to pair';
+                } else {
+                    statusDiv.className = 'status offline';
+                    statusDiv.innerHTML = '● OFFLINE - Starting up...';
+                }
+            } catch(e) {}
+        }
+        
+        setInterval(checkStatus, 3000);
+        checkStatus();
+    </script>
+</body>
+</html>
+    `);
 });
 
-app.get('/dashboard', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
+// API endpoints
+app.get('/api/status', (req, res) => {
+    res.json({ 
+        connected: global.conn ? true : false,
+        uptime: process.uptime()
+    });
 });
 
+// FIXED PAIRING ENDPOINT - NO DATABASE REQUIRED FOR BASIC PAIRING
+app.get('/api/pair', async (req, res) => {
+    let num = req.query.num;
+    if (!num) {
+        return res.json({ error: "Please provide a phone number!" });
+    }
+    
+    // Clean the number - remove any +, spaces, dashes
+    const cleanNumber = num.replace(/[^0-9]/g, '');
+    
+    // Validate number length (basic check)
+    if (cleanNumber.length < 10 || cleanNumber.length > 15) {
+        return res.json({ error: "Invalid phone number! Must be 10-15 digits." });
+    }
+    
+    try {
+        // Check if bot is connected
+        if (!global.conn) {
+            return res.json({ error: "Bot is starting. Please wait 15 seconds and refresh the page." });
+        }
+        
+        console.log(fancy(`📱 Requesting pairing code for ${cleanNumber}`));
+        
+        // Request the pairing code
+        const code = await global.conn.requestPairingCode(cleanNumber);
+        
+        if (!code) {
+            return res.json({ error: "Failed to get code. Please try again." });
+        }
+        
+        // Format code with dashes for readability
+        const formattedCode = code.match(/.{1,4}/g)?.join("-") || code;
+        
+        console.log(fancy(`✅ Pairing code sent for ${cleanNumber}: ${formattedCode}`));
+        
+        // Try to save to database if connected (but don't fail if it doesn't work)
+        try {
+            if (mongoose.connection.readyState === 1) {
+                await User.findOneAndUpdate(
+                    { jid: cleanNumber + '@s.whatsapp.net' },
+                    {
+                        jid: cleanNumber + '@s.whatsapp.net',
+                        name: `User_${cleanNumber.slice(-4)}`,
+                        linkedAt: new Date(),
+                        isActive: true
+                    },
+                    { upsert: true }
+                );
+            }
+        } catch (dbErr) {
+            console.log("Database save skipped:", dbErr.message);
+        }
+        
+        return res.json({ 
+            success: true, 
+            code: formattedCode
+        });
+        
+    } catch (err) {
+        console.error("Pairing error:", err);
+        
+        // Handle specific errors
+        if (err.message.includes("already exists")) {
+            return res.json({ error: "Device already connected! Check WhatsApp linked devices." });
+        }
+        if (err.message.includes("timeout")) {
+            return res.json({ error: "Connection timeout. Please wait and try again." });
+        }
+        
+        return res.json({ error: "Pairing failed: " + err.message });
+    }
+});
+
+// Stats endpoint
 app.get('/api/stats', async (req, res) => {
     try {
-        const users = await User.countDocuments();
-        const groups = await Group.countDocuments();
-        const subscribers = await ChannelSubscriber.countDocuments();
-        
-        res.json({
-            users,
-            groups,
-            subscribers,
+        let userCount = 0;
+        if (mongoose.connection.readyState === 1) {
+            userCount = await User.countDocuments();
+        }
+        res.json({ 
+            users: userCount,
             uptime: process.uptime(),
-            version: config.version
+            connected: global.conn ? true : false
         });
     } catch (error) {
         res.json({ error: error.message });
     }
 });
 
-// FIXED PAIRING CODE ENDPOINT
-app.get('/pair', async (req, res) => {
-    let num = req.query.num;
-    if (!num) return res.json({ error: "Provide a number!" });
-    
-    const cleanNumber = num.replace(/[^0-9]/g, '');
-    
-    try {
-        // Check if user already exists
-        const existingUser = await User.findOne({ jid: cleanNumber + '@s.whatsapp.net' });
-        if (existingUser && existingUser.isActive) {
-            return res.json({ error: "User already registered!" });
-        }
-        
-        // Check if we have a connection
-        if (!global.conn) {
-            return res.json({ error: "Bot is starting. Please wait 10 seconds and try again!" });
-        }
-        
-        // Store the request to be processed when connection is ready
-        pendingPairRequest = { number: cleanNumber, res };
-        
-        // Try immediate pairing if connection is ready
-        try {
-            const code = await global.conn.requestPairingCode(cleanNumber);
-            const formattedCode = code?.match(/.{1,4}/g)?.join("-") || code;
-            
-            // Save user to database
-            await User.findOneAndUpdate(
-                { jid: cleanNumber + '@s.whatsapp.net' },
-                {
-                    jid: cleanNumber + '@s.whatsapp.net',
-                    deviceId: Math.random().toString(36).substr(2, 8),
-                    linkedAt: new Date(),
-                    isActive: true,
-                    mustFollowChannel: true
-                },
-                { upsert: true }
-            );
-            
-            pendingPairRequest = null;
-            return res.json({ 
-                success: true, 
-                code: formattedCode,
-                message: "Use this code in WhatsApp Linked Devices"
-            });
-        } catch (err) {
-            // If immediate fails, wait for connection to be ready
-            console.log("Waiting for connection to be ready...");
-            
-            // Set timeout for pair request
-            setTimeout(() => {
-                if (pendingPairRequest) {
-                    pendingPairRequest.res.json({ error: "Timeout. Please try again in 30 seconds." });
-                    pendingPairRequest = null;
-                }
-            }, 30000);
-        }
-        
-    } catch (err) {
-        console.error("Pairing error:", err);
-        res.json({ error: "Pairing failed: " + err.message });
-    }
+// Dashboard route
+app.get('/dashboard', (req, res) => {
+    res.redirect('/');
 });
 
 async function startInsidious() {
@@ -136,7 +340,10 @@ async function startInsidious() {
         logger: pino({ level: "silent" }),
         browser: Browsers.macOS("Safari"),
         syncFullHistory: true,
-        generateHighQualityLinkPreview: true
+        generateHighQualityLinkPreview: true,
+        // Increase timeouts for better stability
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 60000
     });
 
     // Store conn globally for pairing endpoint
@@ -144,203 +351,70 @@ async function startInsidious() {
 
     // Handle connection updates
     conn.ev.on('connection.update', async (update) => {
-        const { connection, qr, lastDisconnect } = update;
-        
-        if (qr) {
-            console.log(fancy("📱 Scan QR code to connect (or use pairing)"));
-        }
+        const { connection, lastDisconnect } = update;
         
         if (connection === 'open') {
-            console.log(fancy("👹 insidious is alive and connected."));
+            console.log(fancy("✅ INSIDIOUS is alive and connected!"));
             
-            // Auto subscribe owner to channel
+            // Send welcome to owner
             try {
                 const ownerJid = config.ownerNumber + '@s.whatsapp.net';
-                const existing = await ChannelSubscriber.findOne({ jid: ownerJid });
-                if (!existing) {
-                    await ChannelSubscriber.create({
-                        jid: ownerJid,
-                        name: config.ownerName,
-                        subscribedAt: new Date(),
-                        isActive: true
-                    });
-                }
-                
-                // Send welcome to owner
-                const welcomeMsg = `╭─── • 🥀 • ───╮\n   ɪɴꜱɪᴅɪᴏᴜꜱ ᴠ${config.version}\n╰─── • 🥀 • ───╯\n\n✅ Bot is online!\n📊 Dashboard: https://${process.env.RENDER_EXTERNAL_URL || 'localhost'}\n\n${fancy(config.footer)}`;
+                const welcomeMsg = `╭─── • 🥀 • ───╮\n   ɪɴꜱɪᴅɪᴏᴜꜱ ᴠ${config.version}\n╰─── • 🥀 • ───╯\n\n✅ Bot is online!\n\n${fancy(config.footer)}`;
                 await conn.sendMessage(ownerJid, { text: welcomeMsg });
-                
             } catch (error) {
-                console.error("Channel subscription error:", error);
+                console.error("Welcome message error:", error);
             }
         }
         
-        // Handle pending pair request when connection is ready
-        if (connection === 'connecting' && pendingPairRequest) {
-            try {
-                const { number, res } = pendingPairRequest;
-                const code = await conn.requestPairingCode(number);
-                const formattedCode = code?.match(/.{1,4}/g)?.join("-") || code;
-                
-                await User.findOneAndUpdate(
-                    { jid: number + '@s.whatsapp.net' },
-                    {
-                        jid: number + '@s.whatsapp.net',
-                        deviceId: Math.random().toString(36).substr(2, 8),
-                        linkedAt: new Date(),
-                        isActive: true
-                    },
-                    { upsert: true }
-                );
-                
-                res.json({ success: true, code: formattedCode });
-                pendingPairRequest = null;
-            } catch (err) {
-                if (pendingPairRequest) {
-                    pendingPairRequest.res.json({ error: err.message });
-                    pendingPairRequest = null;
-                }
-            }
-        }
-        
-        // Handle disconnection
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
             if (shouldReconnect) {
-                console.log(fancy("🔄 Reconnecting..."));
+                console.log(fancy("🔄 Reconnecting in 5 seconds..."));
                 setTimeout(startInsidious, 5000);
+            } else {
+                console.log(fancy("❌ Logged out. Please restart the bot."));
             }
         }
     });
 
     conn.ev.on('creds.update', saveCreds);
 
-    // AUTO STATUS FEATURE
+    // Message handler
     conn.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message) return;
 
-        // Auto Status logic
-        if (msg.key.remoteJid === 'status@broadcast' && config.autoStatus.view) {
-            try {
-                await conn.readMessages([msg.key]);
-                
-                if (config.autoStatus.like) {
-                    const emojis = ['🥀', '❤️', '🔥', '⭐', '✨', '👏'];
-                    const randomEmoji = emojis[Math.floor(Math.random() * emojis.length)];
-                    
-                    await conn.sendMessage('status@broadcast', { 
-                        react: { 
-                            text: randomEmoji, 
-                            key: msg.key 
-                        } 
-                    }, { statusJidList: [msg.key.participant] });
-                }
-                
-                if (config.autoStatus.reply) {
-                    const statusText = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
-                    if (statusText) {
-                        const aiResponse = await axios.get(`${config.aiModel}${encodeURIComponent("Reply to this status: " + statusText)}`);
-                        await conn.sendMessage(msg.key.participant, { 
-                            text: fancy(aiResponse.data) 
-                        });
-                    }
-                }
-            } catch (error) {
-                console.error("Auto status error:", error);
-            }
-        }
-
         // Channel posts reaction
         if (config.newsletterJid && msg.key.remoteJid === config.newsletterJid) {
             try {
-                const emojis = ['🥀', '❤️', '🔥', '⭐', '✨', '👏', '👍', '🎯'];
+                const emojis = ['🥀', '❤️', '🔥', '⭐', '✨'];
                 const randomEmoji = emojis[Math.floor(Math.random() * emojis.length)];
-                
                 await conn.sendMessage(config.newsletterJid, { 
-                    react: { 
-                        text: randomEmoji, 
-                        key: msg.key 
-                    } 
+                    react: { text: randomEmoji, key: msg.key } 
                 });
-                
-                console.log(fancy(`Reacted to channel post with ${randomEmoji}`));
             } catch (error) {
-                console.error("Channel react error:", error);
+                // Silently fail
             }
         }
 
         // Pass to Master Handler
-        require('./handler')(conn, m);
-    });
-
-    // WELCOME & GOODBYE WITH CHANNEL ENFORCEMENT
-    conn.ev.on('group-participants.update', async (anu) => {
         try {
-            const metadata = await conn.groupMetadata(anu.id);
-            const participants = anu.participants;
-            
-            for (let num of participants) {
-                const isSubscribed = await ChannelSubscriber.findOne({ jid: num });
-                const user = await User.findOne({ jid: num });
-                
-                let pp = await conn.profilePictureUrl(num, 'image').catch(() => config.menuImage);
-                let quote = await axios.get('https://api.quotable.io/random')
-                    .then(res => res.data.content)
-                    .catch(() => "Welcome to the Further.");
-
-                if (anu.action == 'add') {
-                    let welcome = `╭── • 🥀 • ──╮\n  ${fancy("ɴᴇᴡ ꜱᴏᴜʟ ᴅᴇᴛᴇᴄᴛᴇᴅ")}\n╰── • 🥀 • ──╯\n\n│ ◦ ᴜꜱᴇʀ: @${num.split("@")[0]}\n│ ◦ ɢʀᴏᴜᴘ: ${metadata.subject}\n│ ◦ ᴍᴇᴍʙᴇʀꜱ: ${metadata.participants.length}\n\n${!isSubscribed ? '⚠️ *MUST FOLLOW CHANNEL FIRST*\n' + config.channelLink + '\n\n' : ''}🥀 "${fancy(quote)}"\n\n${fancy(config.footer)}`;
-                    
-                    await conn.sendMessage(anu.id, { 
-                        image: { url: pp }, 
-                        caption: welcome, 
-                        mentions: [num] 
-                    });
-                    
-                    if (!user) {
-                        await User.create({
-                            jid: num,
-                            name: `User${num.split('@')[0].slice(-4)}`,
-                            joinedGroups: [anu.id],
-                            joinedAt: new Date(),
-                            mustFollowChannel: !isSubscribed
-                        });
-                    }
-                    
-                } else if (anu.action == 'remove') {
-                    let goodbye = `╭── • 🥀 • ──╮\n  ${fancy("ꜱᴏᴜʟ ʟᴇꜰᴛ")}\n╰── • 🥀 • ──╯\n\n│ ◦ @${num.split('@')[0]} ʜᴀꜱ ᴇxɪᴛᴇᴅ.\n🥀 "${fancy(quote)}"`;
-                    await conn.sendMessage(anu.id, { 
-                        image: { url: pp }, 
-                        caption: goodbye, 
-                        mentions: [num] 
-                    });
-                }
-            }
-        } catch (e) { 
-            console.error("Group event error:", e);
+            require('./handler')(conn, m);
+        } catch (err) {
+            console.error("Handler error:", err);
         }
     });
 
-    // ANTICALL COMPLETE
+    // Anti-call feature
     conn.ev.on('call', async (calls) => {
         if (config.anticall) {
             for (let call of calls) {
                 if (call.status === 'offer') {
                     try {
                         await conn.rejectCall(call.id, call.from);
-                        
-                        const countryCode = call.from.split('@')[0].substring(0, 3);
-                        if (config.autoblock && config.autoblock.includes(countryCode.replace('+', ''))) {
-                            await conn.updateBlockStatus(call.from, 'block');
-                            await conn.sendMessage(config.ownerNumber + "@s.whatsapp.net", { 
-                                text: fancy(`🚫 ᴀᴜᴛᴏʙʟᴏᴄᴋ: ʙʟᴏᴄᴋᴇᴅ ᴄᴀʟʟ ꜰʀᴏᴍ ${countryCode}`) 
-                            });
-                        } else {
-                            await conn.sendMessage(call.from, { 
-                                text: fancy("🥀 ɪɴꜱɪᴅɪᴏᴜꜱ: ɴᴏ ᴄᴀʟʟꜱ ᴀʟʟᴏᴡᴇᴅ. ʏᴏᴜ ʜᴀᴠᴇ ʙᴇᴇɴ ʀᴇᴘᴏʀᴛᴇᴅ.") 
-                            });
-                        }
+                        await conn.sendMessage(call.from, { 
+                            text: fancy("🥀 No calls allowed. Only text messages.") 
+                        });
                     } catch (error) {
                         console.error("Anticall error:", error);
                     }
@@ -349,79 +423,25 @@ async function startInsidious() {
         }
     });
 
-    // SLEEPING MODE ENHANCED
-    if (config.sleepStart && config.sleepEnd && config.groupJid) {
-        const [startH, startM] = config.sleepStart.split(':');
-        const [endH, endM] = config.sleepEnd.split(':');
-
-        cron.schedule(`${startM} ${startH} * * *`, async () => {
-            try {
-                await conn.groupSettingUpdate(config.groupJid, 'announcement');
-                await conn.sendMessage(config.groupJid, { 
-                    text: fancy("🥀 ꜱʟᴇᴇᴘɪɴɢ ᴍᴏᴅᴇ ᴀᴄᴛɪᴠᴀᴛᴇᴅ: ɢʀᴏᴜᴘ ᴄʟᴏꜱᴇᴅ.\n⏰ Will reopen at " + config.sleepEnd) 
-                });
-                
-                await Group.updateMany({}, { $set: { sleeping: true } });
-            } catch (error) {
-                console.error("Sleep mode error:", error);
-            }
-        });
-
-        cron.schedule(`${endM} ${endH} * * *`, async () => {
-            try {
-                await conn.groupSettingUpdate(config.groupJid, 'not_announcement');
-                await conn.sendMessage(config.groupJid, { 
-                    text: fancy("🥀 ᴀᴡᴀᴋᴇ ᴍᴏᴅᴇ: ɢʀᴏᴜᴘ ᴏᴘᴇɴᴇᴅ.") 
-                });
-                
-                await Group.updateMany({}, { $set: { sleeping: false } });
-            } catch (error) {
-                console.error("Awake mode error:", error);
-            }
-        });
-    }
-
-    // AUTO BIO WITH UPTIME
-    if (config.autoBio) {
-        setInterval(() => {
-            const uptime = process.uptime();
-            const days = Math.floor(uptime / 86400);
-            const hours = Math.floor((uptime % 86400) / 3600);
-            const minutes = Math.floor((uptime % 3600) / 60);
-            
-            const bio = `🤖 ${config.botName} | ⚡${days}d ${hours}h | 👑${config.ownerName}`;
-            
-            conn.updateProfileStatus(bio).catch(() => null);
-        }, 60000);
-    }
-
-    // AUTO TYPING FOR ALL CHATS
-    if (config.autoTyping) {
-        setInterval(async () => {
-            try {
-                const chats = await conn.chats.all();
-                for (const chat of chats.slice(0, 5)) {
-                    await conn.sendPresenceUpdate('composing', chat.id);
-                    await new Promise(resolve => setTimeout(resolve, 2000));
-                    await conn.sendPresenceUpdate('paused', chat.id);
-                }
-            } catch (error) {
-                // Silently fail
-            }
-        }, 30000);
-    }
-
     return conn;
 }
 
 // Start the bot
-let conn;
-startInsidious().then(c => {
-    conn = c;
-    global.conn = conn;
-}).catch(console.error);
+console.log(fancy("🚀 Starting INSIDIOUS Bot..."));
+startInsidious().catch(err => {
+    console.error("Failed to start bot:", err);
+    setTimeout(() => {
+        console.log(fancy("🔄 Restarting bot..."));
+        startInsidious();
+    }, 10000);
+});
 
 // Start web server
-app.listen(PORT, () => console.log(fancy(`🌐 Dashboard running on port ${PORT}`)));
+app.listen(PORT, () => {
+    console.log(fancy(`🌐 Web dashboard: http://localhost:${PORT}`));
+    if (process.env.RENDER_EXTERNAL_URL) {
+        console.log(fancy(`🌍 Public URL: ${process.env.RENDER_EXTERNAL_URL}`));
+    }
+});
 
 module.exports = { startInsidious };
