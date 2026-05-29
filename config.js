@@ -1,7 +1,7 @@
 module.exports = {
     // Bot Info
     botName: "INSIDIOUS",
-    ownerNumber: "254794376265", // Your WhatsApp number
+    ownerNumber: "254794376595", // Your WhatsApp number
     ownerName: "StanyTZ",
     version: "2.1.1",
     footer: "INSIDIOUS V2",
