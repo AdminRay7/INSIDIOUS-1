@@ -22,7 +22,7 @@ const PORT = process.env.PORT || 3000;
 
 const { User, Group, ChannelSubscriber } = require('./database/models');
 
-// ---------------- DATABASE (mongoose for user data) ----------------
+// ---------------- DATABASE ----------------
 console.log(fancy("🔄 Connecting to MongoDB (mongoose)..."));
 mongoose.connect(config.mongodb, {
     serverSelectionTimeoutMS: 30000,
@@ -36,7 +36,9 @@ global.conn = null;
 global.socketReady = false;
 global.pairingInProgress = false;
 global.mongoClient = null;
+global.sessionInvalid = false;
 let reconnectAttempts = 0;
+let hasWelcomed = false;
 const MAX_RECONNECT_ATTEMPTS = 10;
 
 // ---------------- WEB UI ----------------
@@ -118,9 +120,17 @@ app.get('/', (req, res) => {
             transition: transform 0.2s;
             width: 100%;
             font-weight: bold;
+            margin-bottom: 10px;
         }
         button:hover { transform: translateY(-2px); }
         button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+        .reset-btn {
+            background: #2a2a2a;
+            color: #ff3366;
+            border: 1px solid #ff3366;
+            font-size: 0.85em;
+            padding: 10px 20px;
+        }
         .result {
             margin-top: 20px;
             padding: 15px;
@@ -158,8 +168,9 @@ app.get('/', (req, res) => {
         <div class="pair-box">
             <h3>🔗 Connect Your Device</h3>
             <p>Enter your WhatsApp number (without + or spaces)</p>
-            <input type="tel" id="phoneNumber" placeholder="Example: 2557xxxxxxxx" />
+            <input type="tel" id="phoneNumber" placeholder="Example: 2547xxxxxxxx" />
             <button onclick="pairDevice()" id="pairBtn">Get Pairing Code</button>
+            <button onclick="resetSession()" class="reset-btn">🗑️ Reset Session</button>
             <div id="result"></div>
         </div>
 
@@ -189,6 +200,27 @@ app.get('/', (req, res) => {
             } finally {
                 btn.disabled = false;
                 btn.textContent = 'Get Pairing Code';
+            }
+        }
+
+        async function resetSession() {
+            if (!confirm('This will clear the saved session. You will need to pair again. Continue?')) return;
+            const btn = document.querySelector('.reset-btn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Clearing...';
+            try {
+                const res = await fetch('/api/reset');
+                const data = await res.json();
+                if (data.success) {
+                    showResult('✅ Session cleared. Wait 15 seconds, then pair again.', 'success');
+                } else {
+                    showResult('❌ ' + (data.error || 'Reset failed.'), 'error');
+                }
+            } catch (e) {
+                showResult('❌ Network error.', 'error');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '🗑️ Reset Session';
             }
         }
 
@@ -228,8 +260,47 @@ app.get('/api/status', (req, res) => {
         connected: global.conn?.user ? true : false,
         ready: global.socketReady,
         pairing: global.pairingInProgress,
+        invalid: global.sessionInvalid,
         uptime: process.uptime()
     });
+});
+
+// ---------------- RESET SESSION ----------------
+app.get('/api/reset', async (req, res) => {
+    try {
+        if (!global.mongoClient) {
+            return res.json({ error: "MongoDB not connected yet." });
+        }
+
+        // Close active socket if any
+        if (global.conn) {
+            try {
+                global.conn.ev.removeAllListeners();
+                global.conn.ws?.close();
+            } catch {}
+            global.conn = null;
+        }
+
+        // Wipe authState collection
+        const collection = global.mongoClient.db("insidious").collection("authState");
+        await collection.deleteMany({});
+        console.log(fancy("🗑️ authState collection cleared."));
+
+        // Reset flags
+        global.socketReady = false;
+        global.sessionInvalid = false;
+        global.pairingInProgress = false;
+        reconnectAttempts = 0;
+        hasWelcomed = false;
+
+        // Restart socket fresh
+        setTimeout(() => startInsidious().catch(e => console.error("Restart failed:", e)), 1500);
+
+        res.json({ success: true, message: "Session cleared. Reconnecting with fresh state..." });
+    } catch (e) {
+        console.error("Reset error:", e);
+        res.json({ error: e.message });
+    }
 });
 
 // ---------------- PAIRING ENDPOINT ----------------
@@ -246,19 +317,31 @@ app.get('/api/pair', async (req, res) => {
         return res.json({ error: "Another pairing request is in progress. Wait a few seconds." });
     }
 
-    if (!global.conn || !global.socketReady) {
-        return res.json({ error: "Bot is still starting up. Wait 10-15 seconds and try again." });
+    if (!global.conn) {
+        return res.json({ error: "Bot is still starting up. Wait 10 seconds." });
     }
 
     if (global.conn.user) {
-        return res.json({ error: "Bot is already connected to a WhatsApp account." });
+        return res.json({ error: "Bot is already connected. Reset session first if you want to re-pair." });
     }
 
     global.pairingInProgress = true;
 
     try {
         console.log(fancy(`📱 Pairing requested for ${cleanNumber}`));
-        await new Promise(r => setTimeout(r, 1000));
+
+        // Ensure socket is actually open before requesting
+        if (!global.socketReady) {
+            // Wait up to 8 seconds for socket to become ready
+            const start = Date.now();
+            while (!global.socketReady && Date.now() - start < 8000) {
+                await new Promise(r => setTimeout(r, 500));
+            }
+        }
+
+        if (!global.socketReady) {
+            throw new Error("Socket didn't become ready in time. Try again.");
+        }
 
         const code = await global.conn.requestPairingCode(cleanNumber);
         if (!code) throw new Error("Empty code returned from WhatsApp");
@@ -367,7 +450,8 @@ async function startInsidious() {
         generateHighQualityLinkPreview: true,
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
-        keepAliveIntervalMs: 30000
+        keepAliveIntervalMs: 30000,
+        retryRequestDelayMs: 2000
     });
 
     global.conn = conn;
@@ -379,48 +463,61 @@ async function startInsidious() {
 
         if (connection === 'connecting') {
             global.socketReady = true;
+            global.sessionInvalid = false;
             console.log(fancy("🔌 Socket ready — pairing available."));
         }
 
         if (connection === 'open') {
             global.socketReady = true;
+            global.sessionInvalid = false;
             reconnectAttempts = 0;
             console.log(fancy("✅ INSIDIOUS is alive and connected!"));
 
-            try {
-                const ownerJid = config.ownerNumber + '@s.whatsapp.net';
-                const welcomeMsg = `╭─── • 🥀 • ───╮\n   ɪɴꜱɪᴅɪᴏᴜꜱ ᴠ${config.version}\n╰─── • 🥀 • ───╯\n\n✅ Bot is online!\n\n${fancy(config.footer)}`;
-                await conn.sendMessage(ownerJid, { text: welcomeMsg });
-            } catch (error) {
-                console.error("Welcome message error:", error.message);
+            // Send welcome ONLY once per session
+            if (!hasWelcomed) {
+                hasWelcomed = true;
+                try {
+                    const ownerJid = config.ownerNumber + '@s.whatsapp.net';
+                    const welcomeMsg = `╭─── • 🥀 • ───╮\n   ɪɴꜱɪᴅɪᴏᴜꜱ ᴠ${config.version}\n╰─── • 🥀 • ───╯\n\n✅ Bot is online!\n\n${fancy(config.footer)}`;
+                    await conn.sendMessage(ownerJid, { text: welcomeMsg });
+                } catch (error) {
+                    console.error("Welcome message error:", error.message);
+                }
             }
         }
 
         if (connection === 'close') {
-            global.socketReady = false;
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             const reason = lastDisconnect?.error?.message || 'unknown';
 
             console.log(fancy(`❌ Connection closed (code: ${statusCode}, reason: ${reason})`));
 
-            if (statusCode === DisconnectReason.loggedOut) {
-                console.log(fancy("🚪 Logged out. Clear authState collection in MongoDB and restart."));
-                return;
+            // ---------- 401 / loggedOut → DO NOT RECONNECT ----------
+            if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
+                global.sessionInvalid = true;
+                global.socketReady = false;
+                console.log(fancy("🚪 Session invalid (401). Auto-reconnect DISABLED."));
+                console.log(fancy("👉 Go to web UI → click 'Reset Session' → then pair again."));
+                return; // STOP — no reconnect loop
             }
 
+            // ---------- 405/515 → normal during pairing, one clean retry ----------
             if (statusCode === 405 || statusCode === 515) {
-                console.log(fancy("ℹ️ 405/515 — reconnecting after pairing handshake..."));
-                setTimeout(() => startInsidious(), 5000);
+                global.socketReady = false;
+                console.log(fancy("ℹ️ 405/515 — normal after pairing. Reconnecting once..."));
+                setTimeout(() => startInsidious().catch(e => console.error(e)), 5000);
                 return;
             }
 
+            // ---------- Other errors → limited reconnect with backoff ----------
+            global.socketReady = false;
             if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
                 reconnectAttempts++;
-                const delay = Math.min(5000 * reconnectAttempts, 30000);
+                const delay = Math.min(3000 * reconnectAttempts, 30000);
                 console.log(fancy(`🔄 Reconnect ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} in ${delay/1000}s...`));
-                setTimeout(() => startInsidious(), delay);
+                setTimeout(() => startInsidious().catch(e => console.error(e)), delay);
             } else {
-                console.log(fancy("🛑 Max reconnect attempts reached. Restart the service."));
+                console.log(fancy("🛑 Max reconnect attempts reached. Manual restart required."));
             }
         }
     });
@@ -471,7 +568,7 @@ async function startInsidious() {
 console.log(fancy("🚀 Starting INSIDIOUS Bot..."));
 startInsidious().catch(err => {
     console.error("Failed to start bot:", err);
-    setTimeout(() => startInsidious(), 10000);
+    setTimeout(() => startInsidious().catch(e => console.error(e)), 10000);
 });
 
 app.listen(PORT, () => {
