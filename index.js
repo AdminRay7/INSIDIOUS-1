@@ -1,11 +1,12 @@
 const {
     default: makeWASocket,
-    useMultiFileAuthState,
     DisconnectReason,
     Browsers,
     makeCacheableSignalKeyStore,
     fetchLatestBaileysVersion
 } = require("@whiskeysockets/baileys");
+const { MongoClient } = require("mongodb");
+const { useMongoDBAuthState } = require("./lib/mongoAuthState");
 const pino = require("pino");
 const express = require("express");
 const mongoose = require("mongoose");
@@ -21,10 +22,9 @@ const PORT = process.env.PORT || 3000;
 
 const { User, Group, ChannelSubscriber } = require('./database/models');
 
-// ---------------- DATABASE ----------------
-const MONGODB_URI = config.mongodb || process.env.MONGODB_URI;
-console.log(fancy("🔄 Connecting to MongoDB..."));
-mongoose.connect(MONGODB_URI, {
+// ---------------- DATABASE (mongoose for user data) ----------------
+console.log(fancy("🔄 Connecting to MongoDB (mongoose)..."));
+mongoose.connect(config.mongodb, {
     serverSelectionTimeoutMS: 30000,
     connectTimeoutMS: 30000
 })
@@ -35,8 +35,9 @@ mongoose.connect(MONGODB_URI, {
 global.conn = null;
 global.socketReady = false;
 global.pairingInProgress = false;
+global.mongoClient = null;
 let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 5;
+const MAX_RECONNECT_ATTEMPTS = 10;
 
 // ---------------- WEB UI ----------------
 app.get('/', (req, res) => {
@@ -61,7 +62,6 @@ app.get('/', (req, res) => {
         }
         .container {
             background: rgba(0,0,0,0.85);
-            backdrop-filter: blur(10px);
             border-radius: 28px;
             padding: 40px;
             max-width: 500px;
@@ -152,9 +152,9 @@ app.get('/', (req, res) => {
 <body>
     <div class="container">
         <h1>🥀 INSIDIOUS</h1>
-        <div class="subtitle">WhatsApp Bot v2.1.1</div>
-        <div class="status offline" id="status">● OFFLINE</div>
-        
+        <div class="subtitle">WhatsApp Bot v${config.version}</div>
+        <div class="status offline" id="status">● STARTING...</div>
+
         <div class="pair-box">
             <h3>🔗 Connect Your Device</h3>
             <p>Enter your WhatsApp number (without + or spaces)</p>
@@ -162,25 +162,25 @@ app.get('/', (req, res) => {
             <button onclick="pairDevice()" id="pairBtn">Get Pairing Code</button>
             <div id="result"></div>
         </div>
-        
-        <div class="footer">Developed by StanyTZ | Powered by Baileys</div>
+
+        <div class="footer">Developed by ${config.ownerName} | Powered by Baileys</div>
     </div>
 
     <script>
         async function pairDevice() {
             const number = document.getElementById('phoneNumber').value;
             if (!number) { showResult('Please enter your phone number!', 'error'); return; }
-            
+
             const btn = document.getElementById('pairBtn');
             btn.disabled = true;
             btn.textContent = '⏳ Requesting code...';
-            
+
             try {
                 const response = await fetch('/api/pair?num=' + number);
                 const data = await response.json();
-                
+
                 if (data.code) {
-                    showResult('✅ <strong>Your pairing code:</strong><br><div class="code-display">' + data.code + '</div><br>📱 WhatsApp → Settings → Linked Devices → Link with phone number<br>🔑 Enter the code on your phone', 'success');
+                    showResult('✅ <strong>Your pairing code:</strong><br><div class="code-display">' + data.code + '</div><br>📱 WhatsApp → Settings → Linked Devices → Link with phone number<br>🔑 Enter this code on your phone', 'success');
                 } else {
                     showResult('❌ ' + (data.error || 'Pairing failed.'), 'error');
                 }
@@ -191,11 +191,11 @@ app.get('/', (req, res) => {
                 btn.textContent = 'Get Pairing Code';
             }
         }
-        
+
         function showResult(message, type) {
             document.getElementById('result').innerHTML = '<div class="result ' + type + '">' + message + '</div>';
         }
-        
+
         async function checkStatus() {
             try {
                 const res = await fetch('/api/status');
@@ -213,7 +213,7 @@ app.get('/', (req, res) => {
                 }
             } catch(e) {}
         }
-        
+
         setInterval(checkStatus, 3000);
         checkStatus();
     </script>
@@ -250,7 +250,6 @@ app.get('/api/pair', async (req, res) => {
         return res.json({ error: "Bot is still starting up. Wait 10-15 seconds and try again." });
     }
 
-    // If already authenticated, block new pairing
     if (global.conn.user) {
         return res.json({ error: "Bot is already connected to a WhatsApp account." });
     }
@@ -259,8 +258,6 @@ app.get('/api/pair', async (req, res) => {
 
     try {
         console.log(fancy(`📱 Pairing requested for ${cleanNumber}`));
-
-        // Small delay to let the WS fully settle
         await new Promise(r => setTimeout(r, 1000));
 
         const code = await global.conn.requestPairingCode(cleanNumber);
@@ -269,7 +266,6 @@ app.get('/api/pair', async (req, res) => {
         const formattedCode = code.match(/.{1,4}/g)?.join("-") || code;
         console.log(fancy(`✅ Pairing code for ${cleanNumber}: ${formattedCode}`));
 
-        // Optional: store in DB
         try {
             if (mongoose.connection.readyState === 1) {
                 await User.findOneAndUpdate(
@@ -305,7 +301,6 @@ app.get('/api/pair', async (req, res) => {
         return res.json({ error: "Pairing failed: " + err.message });
 
     } finally {
-        // Release lock after a short cooldown
         setTimeout(() => { global.pairingInProgress = false; }, 5000);
     }
 });
@@ -330,7 +325,7 @@ app.get('/dashboard', (req, res) => res.redirect('/'));
 
 // ---------------- BOT START ----------------
 async function startInsidious() {
-    // Clean stale listeners if a previous socket exists
+    // Clean old listeners if a previous socket exists
     if (global.conn) {
         try {
             global.conn.ev.removeAllListeners('connection.update');
@@ -344,7 +339,20 @@ async function startInsidious() {
 
     global.socketReady = false;
 
-    const { state, saveCreds } = await useMultiFileAuthState(config.sessionName);
+    // ---------- MongoDB session store ----------
+    if (!global.mongoClient) {
+        global.mongoClient = new MongoClient(config.mongodb);
+        await global.mongoClient.connect();
+        console.log(fancy("✅ MongoDB session store connected."));
+    }
+
+    const collection = global.mongoClient
+        .db("insidious")
+        .collection("authState");
+
+    const { state, saveCreds } = await useMongoDBAuthState(collection);
+    // ------------------------------------------
+
     const { version } = await fetchLatestBaileysVersion();
 
     const conn = makeWASocket({
@@ -395,21 +403,17 @@ async function startInsidious() {
 
             console.log(fancy(`❌ Connection closed (code: ${statusCode}, reason: ${reason})`));
 
-            // Logged out → don't reconnect
             if (statusCode === DisconnectReason.loggedOut) {
-                console.log(fancy("🚪 Logged out. Delete session folder and restart."));
+                console.log(fancy("🚪 Logged out. Clear authState collection in MongoDB and restart."));
                 return;
             }
 
-            // 405 during pairing is NORMAL — WhatsApp drops the socket
-            // after issuing the code. Reconnect once cleanly.
             if (statusCode === 405 || statusCode === 515) {
                 console.log(fancy("ℹ️ 405/515 — reconnecting after pairing handshake..."));
                 setTimeout(() => startInsidious(), 5000);
                 return;
             }
 
-            // Cap reconnect attempts
             if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
                 reconnectAttempts++;
                 const delay = Math.min(5000 * reconnectAttempts, 30000);
@@ -426,7 +430,6 @@ async function startInsidious() {
         const msg = m.messages[0];
         if (!msg.message) return;
 
-        // Newsletter reaction
         if (config.newsletterJid && msg.key.remoteJid === config.newsletterJid) {
             try {
                 const emojis = ['🥀', '❤️', '🔥', '⭐', '✨'];
