@@ -3,50 +3,64 @@ const path = require('path');
 const config = require('../../config');
 const { fancy } = require('../../lib/font');
 
-// In-memory state per chat
-const menuState = {};
+// Per-chat menu state (which page each user is on)
+const menuState = new Map();
 
 module.exports = {
     name: "menu",
+    aliases: ["help", "commands", "cmdlist", "cmds", "m"],
     description: "Show all available commands",
-    aliases: ["help", "commands", "cmdlist", "cmds"],
     execute: async (conn, msg, args, { from, sender, isOwner, pushname }) => {
         try {
             await conn.sendPresenceUpdate('composing', from);
 
-            // ---------- Handle numbered selection ----------
+            // If args provided, handle selection
             if (args.length > 0) {
-                const pick = args[0].trim();
-                return await handleSelection(conn, msg, from, sender, pick);
+                return await handleSelection(conn, msg, from, sender, args.join(' ').trim());
             }
 
-            // ---------- Build menu ----------
+            // ---------- Build command index ----------
             const cmdPath = path.join(__dirname, '../../commands');
-            let categories = [];
-            let totalCmds = 0;
+            const categories = [];
             const commandsByCategory = {};
+            let totalCmds = 0;
 
             if (await fs.pathExists(cmdPath)) {
                 const items = await fs.readdir(cmdPath);
                 for (const item of items) {
                     const itemPath = path.join(cmdPath, item);
                     const stat = await fs.stat(itemPath);
-                    if (stat.isDirectory()) {
-                        const files = await fs.readdir(itemPath);
-                        const cmds = files.filter(f => f.endsWith('.js')).map(f => f.replace('.js', ''));
-                        if (cmds.length > 0) {
-                            categories.push(item);
-                            commandsByCategory[item] = cmds;
-                            totalCmds += cmds.length;
+                    if (!stat.isDirectory()) continue;
+
+                    const files = await fs.readdir(itemPath);
+                    const cmds = [];
+
+                    for (const file of files) {
+                        if (!file.endsWith('.js')) continue;
+                        const filePath = path.join(itemPath, file);
+                        try {
+                            delete require.cache[require.resolve(filePath)];
+                            const mod = require(filePath);
+                            const mainName = (mod.name || file.replace('.js', '')).toLowerCase();
+                            const aliases = Array.isArray(mod.aliases) ? mod.aliases : [];
+                            cmds.push({ name: mainName, aliases, file: file.replace('.js', '') });
+                        } catch (loadErr) {
+                            console.error(`⚠️ Cannot load ${filePath}:`, loadErr.message);
                         }
+                    }
+
+                    if (cmds.length > 0) {
+                        categories.push(item);
+                        commandsByCategory[item] = cmds;
+                        totalCmds += cmds.length;
                     }
                 }
             }
 
-            // Save state
-            menuState[from] = { categories, commandsByCategory, totalCmds };
+            categories.sort();
+            menuState.set(from, { categories, commandsByCategory, totalCmds, page: 0 });
 
-            // Build text menu
+            // ---------- Show main menu ----------
             const uptime = process.uptime();
             const days = Math.floor(uptime / 86400);
             const hours = Math.floor((uptime % 86400) / 3600);
@@ -70,13 +84,10 @@ module.exports = {
             menu += `\n`;
 
             menu += `│ ${fancy("🎯 HOW TO USE")}\n`;
-            menu += `│ Reply with a number to open a category\n`;
-            menu += `│ Example: ${config.prefix}menu 1\n\n`;
-
-            menu += `│ ${fancy("⚡ QUICK")}\n`;
-            menu += `│ ${config.prefix}menu stats - Bot statistics\n`;
-            menu += `│ ${config.prefix}menu owner - Owner info\n`;
-            menu += `│ ${config.prefix}menu all   - All commands\n\n`;
+            menu += `│ ◦ Reply with a number: ${config.prefix}menu 1\n`;
+            menu += `│ ◦ View stats:         ${config.prefix}menu stats\n`;
+            menu += `│ ◦ Owner info:         ${config.prefix}menu owner\n`;
+            menu += `│ ◦ All commands:       ${config.prefix}menu all\n\n`;
 
             menu += `└────────────────\n${fancy(config.footer)}`;
 
@@ -84,48 +95,59 @@ module.exports = {
 
         } catch (e) {
             console.error("Menu error:", e);
-            await conn.sendMessage(from, { text: fancy("❌ Menu failed to load.") });
+            await conn.sendMessage(from, { text: fancy("❌ Menu failed: " + e.message) });
         }
     }
 };
 
-// ---------------- Selection handler ----------------
+// ================= SELECTION HANDLER =================
 async function handleSelection(conn, msg, from, sender, pick) {
-    const state = menuState[from];
+    const state = menuState.get(from);
     if (!state) {
         return conn.sendMessage(from, {
-            text: fancy(`❌ Menu expired. Type ${config.prefix}menu to reload.`)
-        });
+            text: fancy(`❌ Menu expired. Type ${config.prefix}menu again.`)
+        }, { quoted: msg });
     }
 
     const lower = pick.toLowerCase();
 
-    // Special keywords
+    // --- Special: stats ---
     if (lower === 'stats') {
         const stats = await getBotStats();
         return conn.sendMessage(from, {
-            text: `╭─── • 📊 • ───╮\n  ${fancy("BOT STATISTICS")}\n╰─── • 📊 • ───╯\n\n${stats}\n\n${config.footer}`
+            text: `╭─── • 📊 • ───╮\n  ${fancy("BOT STATISTICS")}\n╰─── • 📊 • ───╯\n\n${stats}\n\n${config.footer}`,
         }, { quoted: msg });
     }
 
+    // --- Special: owner ---
     if (lower === 'owner') {
-        const card = `╭─── • 👑 • ───╮\n  ${fancy("OWNER INFO")}\n╰─── • 👑 • ───╯\n\n│ ◦ ${fancy("Name")}: ${config.ownerName}\n│ ◦ ${fancy("Number")}: ${config.ownerNumber}\n│ ◦ ${fancy("Bot")}: ${config.botName}\n│ ◦ ${fancy("Version")}: ${config.version}\n\n📢 wa.me/${config.ownerNumber}\n\n${config.footer}`;
+        const card =
+            `╭─── • 👑 • ───╮\n  ${fancy("OWNER INFO")}\n╰─── • 👑 • ───╯\n\n` +
+            `│ ◦ ${fancy("Name")}: ${config.ownerName}\n` +
+            `│ ◦ ${fancy("Number")}: ${config.ownerNumber}\n` +
+            `│ ◦ ${fancy("Bot")}: ${config.botName}\n` +
+            `│ ◦ ${fancy("Version")}: ${config.version}\n\n` +
+            `📢 wa.me/${config.ownerNumber}\n\n${config.footer}`;
         return conn.sendMessage(from, { text: card }, { quoted: msg });
     }
 
+    // --- Special: all ---
     if (lower === 'all') {
         let out = `╭─── • 📜 • ───╮\n  ${fancy("ALL COMMANDS")}\n╰─── • 📜 • ───╯\n\n`;
         for (const cat of state.categories) {
+            const list = state.commandsByCategory[cat];
             out += `│ ${fancy("📁 " + cat.toUpperCase())}\n`;
-            out += `│ ◦ ${state.commandsByCategory[cat].join(`, ${config.prefix}`)}\n`.replace(` ${config.prefix}`, ` ${config.prefix}`);
+            list.forEach(c => {
+                out += `│ ◦ ${config.prefix}${c.name}\n`;
+            });
             out += `\n`;
         }
         out += `└────────────────\n${config.footer}`;
         return conn.sendMessage(from, { text: out }, { quoted: msg });
     }
 
-    // Numeric pick
-    const num = parseInt(lower);
+    // --- Numeric category pick ---
+    const num = parseInt(lower, 10);
     if (!isNaN(num) && num >= 1 && num <= state.categories.length) {
         const cat = state.categories[num - 1];
         const cmds = state.commandsByCategory[cat];
@@ -133,34 +155,45 @@ async function handleSelection(conn, msg, from, sender, pick) {
         let card = `╭─── • 📁 • ───╮\n  ${fancy(cat.toUpperCase())}\n╰─── • 📁 • ───╯\n\n`;
         card += `│ ${fancy("📝 COMMANDS (" + cmds.length + ")")}\n`;
         cmds.forEach(c => {
-            card += `│ ◦ ${config.prefix}${c}\n`;
+            card += `│ ◦ ${config.prefix}${c.name}\n`;
+            if (c.aliases.length > 0) {
+                card += `│   ↳ aliases: ${c.aliases.map(a => config.prefix + a).join(', ')}\n`;
+            }
         });
         card += `\n└────────────────\n${config.footer}`;
         card += `\n\n_Type ${config.prefix}menu to go back_`;
-
         return conn.sendMessage(from, { text: card }, { quoted: msg });
     }
 
-    // Unknown
+    // --- Unknown option ---
     return conn.sendMessage(from, {
-        text: fancy(`❌ Invalid option. Type ${config.prefix}menu to see categories.`)
-    });
+        text: fancy(`❌ Invalid option "${pick}". Type ${config.prefix}menu to see categories.`)
+    }, { quoted: msg });
 }
 
-// ---------------- Stats helper ----------------
+// ================= BOT STATS =================
 async function getBotStats() {
     const { User, Group, ChannelSubscriber } = require('../../database/models');
     try {
         const [users, groups, subs] = await Promise.all([
-            User.countDocuments(),
-            Group.countDocuments(),
-            ChannelSubscriber.countDocuments()
+            User.countDocuments().catch(() => 0),
+            Group.countDocuments().catch(() => 0),
+            ChannelSubscriber.countDocuments().catch(() => 0)
         ]);
-        return `│ ${fancy("📈 DATABASE")}\n│ ◦ Users: ${users}\n│ ◦ Groups: ${groups}\n│ ◦ Subscribers: ${subs}\n\n│ ${fancy("💻 SYSTEM")}\n│ ◦ Node: ${process.version}\n│ ◦ Memory: ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB\n│ ◦ Platform: ${process.platform}`;
+        return (
+            `│ ${fancy("📈 DATABASE")}\n` +
+            `│ ◦ Users: ${users}\n` +
+            `│ ◦ Groups: ${groups}\n` +
+            `│ ◦ Subscribers: ${subs}\n\n` +
+            `│ ${fancy("💻 SYSTEM")}\n` +
+            `│ ◦ Node: ${process.version}\n` +
+            `│ ◦ Memory: ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(2)} MB\n` +
+            `│ ◦ Platform: ${process.platform}`
+        );
     } catch {
         return `│ ${fancy("📈 STATS")}\n│ ◦ Status: Active\n│ ◦ Uptime: Online`;
     }
 }
 
-// Export state so handler can reset if needed
+// Expose state for the handler (optional)
 module.exports._menuState = menuState;
