@@ -11,7 +11,7 @@ module.exports = {
     sessionName: "insidious_session",
 
     // Database
-    mongodb: "mongodb+srv://presenter:ryan.3063@cluster0.94sivgt.mongodb.net/?appName=Cluster0",
+    mongodb: "mongodb+srv://ryanraybot_db_user:mljhRdHoeVIB9gZa@cluster0.ng7nkwm.mongodb.net/?appName=Cluster0",
 
     // AI
     aiModel: "https://ai.servietsky1.workers.chat/?message=",
