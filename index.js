@@ -1,3 +1,4 @@
+
 const {
     default: makeWASocket,
     DisconnectReason,
@@ -25,6 +26,7 @@ const { User, Group, ChannelSubscriber } = require('./database/models');
 // ---------------- DATABASE ----------------
 console.log(fancy("🔄 Connecting to MongoDB (mongoose)..."));
 mongoose.connect(config.mongodb, {
+    dbName: "insidious",
     serverSelectionTimeoutMS: 30000,
     connectTimeoutMS: 30000
 })
@@ -272,7 +274,6 @@ app.get('/api/reset', async (req, res) => {
             return res.json({ error: "MongoDB not connected yet." });
         }
 
-        // Close active socket if any
         if (global.conn) {
             try {
                 global.conn.ev.removeAllListeners();
@@ -281,19 +282,16 @@ app.get('/api/reset', async (req, res) => {
             global.conn = null;
         }
 
-        // Wipe authState collection
         const collection = global.mongoClient.db("insidious").collection("authState");
         await collection.deleteMany({});
         console.log(fancy("🗑️ authState collection cleared."));
 
-        // Reset flags
         global.socketReady = false;
         global.sessionInvalid = false;
         global.pairingInProgress = false;
         reconnectAttempts = 0;
         hasWelcomed = false;
 
-        // Restart socket fresh
         setTimeout(() => startInsidious().catch(e => console.error("Restart failed:", e)), 1500);
 
         res.json({ success: true, message: "Session cleared. Reconnecting with fresh state..." });
@@ -330,9 +328,7 @@ app.get('/api/pair', async (req, res) => {
     try {
         console.log(fancy(`📱 Pairing requested for ${cleanNumber}`));
 
-        // Ensure socket is actually open before requesting
         if (!global.socketReady) {
-            // Wait up to 8 seconds for socket to become ready
             const start = Date.now();
             while (!global.socketReady && Date.now() - start < 8000) {
                 await new Promise(r => setTimeout(r, 500));
@@ -408,7 +404,6 @@ app.get('/dashboard', (req, res) => res.redirect('/'));
 
 // ---------------- BOT START ----------------
 async function startInsidious() {
-    // Clean old listeners if a previous socket exists
     if (global.conn) {
         try {
             global.conn.ev.removeAllListeners('connection.update');
@@ -422,7 +417,6 @@ async function startInsidious() {
 
     global.socketReady = false;
 
-    // ---------- MongoDB session store ----------
     if (!global.mongoClient) {
         global.mongoClient = new MongoClient(config.mongodb);
         await global.mongoClient.connect();
@@ -434,7 +428,6 @@ async function startInsidious() {
         .collection("authState");
 
     const { state, saveCreds } = await useMongoDBAuthState(collection);
-    // ------------------------------------------
 
     const { version } = await fetchLatestBaileysVersion();
 
@@ -473,7 +466,6 @@ async function startInsidious() {
             reconnectAttempts = 0;
             console.log(fancy("✅ INSIDIOUS is alive and connected!"));
 
-            // Send welcome ONLY once per session
             if (!hasWelcomed) {
                 hasWelcomed = true;
                 try {
@@ -492,16 +484,14 @@ async function startInsidious() {
 
             console.log(fancy(`❌ Connection closed (code: ${statusCode}, reason: ${reason})`));
 
-            // ---------- 401 / loggedOut → DO NOT RECONNECT ----------
             if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
                 global.sessionInvalid = true;
                 global.socketReady = false;
                 console.log(fancy("🚪 Session invalid (401). Auto-reconnect DISABLED."));
                 console.log(fancy("👉 Go to web UI → click 'Reset Session' → then pair again."));
-                return; // STOP — no reconnect loop
+                return;
             }
 
-            // ---------- 405/515 → normal during pairing, one clean retry ----------
             if (statusCode === 405 || statusCode === 515) {
                 global.socketReady = false;
                 console.log(fancy("ℹ️ 405/515 — normal after pairing. Reconnecting once..."));
@@ -509,7 +499,6 @@ async function startInsidious() {
                 return;
             }
 
-            // ---------- Other errors → limited reconnect with backoff ----------
             global.socketReady = false;
             if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
                 reconnectAttempts++;
@@ -522,7 +511,6 @@ async function startInsidious() {
         }
     });
 
-    // ---------------- MESSAGES ----------------
     conn.ev.on('messages.upsert', async (m) => {
         const msg = m.messages[0];
         if (!msg.message) return;
@@ -544,7 +532,6 @@ async function startInsidious() {
         }
     });
 
-    // ---------------- ANTICALL ----------------
     conn.ev.on('call', async (calls) => {
         if (!config.anticall) return;
         for (let call of calls) {
