@@ -5,9 +5,6 @@ const config = require('./config');
 const { fancy } = require('./lib/font');
 const { User, ChannelSubscriber } = require('./database/models');
 
-// Store button handlers
-const buttonHandlers = new Map();
-
 module.exports = async (conn, m) => {
     try {
         if (!m.messages || !m.messages[0]) return;
@@ -18,38 +15,12 @@ module.exports = async (conn, m) => {
         const type = Object.keys(msg.message)[0];
         const sender = msg.key.participant || msg.key.remoteJid;
         const pushname = msg.pushName || "Unknown Soul";
-        
-        // Handle BUTTON interactions
-        if (type === 'buttonsResponseMessage') {
-            const buttonMsg = msg.message.buttonsResponseMessage;
-            const buttonId = buttonMsg.selectedButtonId;
-            const text = buttonMsg.selectedDisplayText;
-            
-            console.log(fancy(`[BUTTON] ${sender} pressed: ${buttonId}`));
-            
-            // Load menu module to handle button
-            const menuPath = path.join(__dirname, 'commands', 'main', 'menu.js');
-            if (fs.existsSync(menuPath)) {
-                delete require.cache[require.resolve(menuPath)];
-                const menuModule = require(menuPath);
-                
-                if (menuModule.handleButton) {
-                    await menuModule.handleButton(conn, msg, buttonId, { from, sender });
-                } else {
-                    // Fallback button response
-                    await conn.sendMessage(from, { 
-                        text: fancy(`🔘 You pressed: ${text}\n\nType .menu to see full menu.`) 
-                    });
-                }
-            }
-            return;
-        }
-        
-        const body = (type === 'conversation') ? msg.message.conversation : 
-                    (type === 'extendedTextMessage') ? msg.message.extendedTextMessage.text : 
-                    (type === 'imageMessage') ? msg.message.imageMessage.caption : 
+
+        const body = (type === 'conversation') ? msg.message.conversation :
+                    (type === 'extendedTextMessage') ? msg.message.extendedTextMessage.text :
+                    (type === 'imageMessage') ? msg.message.imageMessage.caption :
                     (type === 'videoMessage') ? msg.message.videoMessage.caption : '';
-        
+
         const isGroup = from.endsWith('@g.us');
         const isOwner = config.ownerNumber.includes(sender.split('@')[0]) || msg.key.fromMe;
         const prefix = config.prefix;
@@ -74,8 +45,8 @@ module.exports = async (conn, m) => {
             try {
                 const reactions = ['🥀', '❤️', '🔥', '⭐', '✨'];
                 const randomReaction = reactions[Math.floor(Math.random() * reactions.length)];
-                await conn.sendMessage(from, { 
-                    react: { text: randomReaction, key: msg.key } 
+                await conn.sendMessage(from, {
+                    react: { text: randomReaction, key: msg.key }
                 });
             } catch (error) {
                 console.error("Auto react error:", error);
@@ -98,7 +69,7 @@ module.exports = async (conn, m) => {
                     user.lastActive = new Date();
                 }
                 await user.save();
-                
+
                 console.log(fancy(`[SAVE] ${pushname} (${sender})`));
             } catch (error) {
                 console.error("Auto save error:", error);
@@ -110,11 +81,11 @@ module.exports = async (conn, m) => {
 
         // CHANNEL SUBSCRIPTION CHECK
         if (!isOwner && !isGroup && config.channelLink) {
-            const subscriber = await ChannelSubscriber.findOne({ 
-                jid: sender, 
-                isActive: true 
+            const subscriber = await ChannelSubscriber.findOne({
+                jid: sender,
+                isActive: true
             });
-            
+
             if (!subscriber) {
                 await ChannelSubscriber.create({
                     jid: sender,
@@ -123,11 +94,11 @@ module.exports = async (conn, m) => {
                     isActive: true,
                     autoFollow: true
                 });
-                
-                await conn.sendMessage(from, { 
-                    text: fancy(`╭── • 🥀 • ──╮\n  ${fancy("ᴄʜᴀɴɴᴇʟ ꜱᴜʙꜱᴄʀɪᴘᴛɪᴏɴ")}\n╰── • 🥀 • ──╯\n\n✅ Auto-subscribed!\n\n🔗 ${config.channelLink}\n\nYou can now use all features.`) 
+
+                await conn.sendMessage(from, {
+                    text: fancy(`╭── • 🥀 • ──╮\n  ${fancy("ᴄʜᴀɴɴᴇʟ ꜱᴜʙꜱᴄʀɪᴘᴛɪᴏɴ")}\n╰── • 🥀 • ──╯\n\n✅ Auto-subscribed!\n\n🔗 ${config.channelLink}\n\nYou can now use all features.`)
                 });
-                
+
                 console.log(fancy(`✅ Auto-subscribed ${sender}`));
             } else {
                 subscriber.lastActive = new Date();
@@ -146,11 +117,11 @@ module.exports = async (conn, m) => {
                 }
                 return false;
             });
-            
+
             if (hasBug) {
                 try {
                     await conn.sendMessage(from, { delete: msg.key });
-                    await conn.sendMessage(from, { 
+                    await conn.sendMessage(from, {
                         text: fancy(`🚫 ʙᴜɢ ᴅᴇᴛᴇᴄᴛᴇᴅ\n@${sender.split('@')[0]} sent malicious content`),
                         mentions: [sender]
                     });
@@ -166,16 +137,16 @@ module.exports = async (conn, m) => {
             try {
                 let user = await User.findOne({ jid: sender });
                 const now = Date.now();
-                
+
                 if (user) {
                     const timeDiff = now - (user.lastMessageTime || 0);
                     if (timeDiff < 60000) {
                         user.spamCount = (user.spamCount || 0) + 1;
-                        
+
                         if (user.spamCount >= 5) {
                             if (isGroup) {
                                 await conn.groupParticipantsUpdate(from, [sender], "remove");
-                                await conn.sendMessage(from, { 
+                                await conn.sendMessage(from, {
                                     text: fancy(`🚫 ꜱᴘᴀᴍᴍᴇʀ ʀᴇᴍᴏᴠᴇᴅ\n@${sender.split('@')[0]} removed for spamming`),
                                     mentions: [sender]
                                 });
@@ -199,7 +170,7 @@ module.exports = async (conn, m) => {
         if (config.autoblock.length > 0 && !isOwner) {
             const countryCode = sender.split('@')[0].substring(0, 3);
             const cleanCode = countryCode.replace('+', '');
-            
+
             if (config.autoblock.includes(cleanCode)) {
                 try {
                     await conn.updateBlockStatus(sender, 'block');
@@ -216,7 +187,7 @@ module.exports = async (conn, m) => {
             if (config.antilink && body && body.match(/https?:\/\//gi)) {
                 try {
                     await conn.sendMessage(from, { delete: msg.key });
-                    await conn.sendMessage(from, { 
+                    await conn.sendMessage(from, {
                         text: fancy(`⚠️ ᴀɴᴛɪʟɪɴᴋ\n@${sender.split('@')[0]} links not allowed`),
                         mentions: [sender]
                     });
@@ -230,7 +201,7 @@ module.exports = async (conn, m) => {
             if (config.antiscam && body && config.scamWords.some(w => body.toLowerCase().includes(w))) {
                 try {
                     await conn.sendMessage(from, { delete: msg.key });
-                    await conn.sendMessage(from, { 
+                    await conn.sendMessage(from, {
                         text: fancy(`⚠️ ꜱᴄᴀᴍ ᴀʟᴇʀᴛ!\n@${sender.split('@')[0]} sent scam content`),
                         mentions: [sender]
                     });
@@ -244,7 +215,7 @@ module.exports = async (conn, m) => {
             if (config.antiporn && body && config.pornWords.some(w => body.toLowerCase().includes(w))) {
                 try {
                     await conn.sendMessage(from, { delete: msg.key });
-                    await conn.sendMessage(from, { 
+                    await conn.sendMessage(from, {
                         text: fancy(`🚫 ᴀɴᴛɪᴘᴏʀɴ\n@${sender.split('@')[0]} content deleted`),
                         mentions: [sender]
                     });
@@ -261,12 +232,12 @@ module.exports = async (conn, m) => {
                     'videoMessage': 'video',
                     'stickerMessage': 'sticker'
                 };
-                
-                if (mediaTypes[type] && 
+
+                if (mediaTypes[type] &&
                     (config.antimedia === 'all' || config.antimedia === mediaTypes[type])) {
                     try {
                         await conn.sendMessage(from, { delete: msg.key });
-                        await conn.sendMessage(from, { 
+                        await conn.sendMessage(from, {
                             text: fancy(`🚫 ᴀɴᴛɪᴍᴇᴅɪᴀ\n${mediaTypes[type]} not allowed`),
                             mentions: [sender]
                         });
@@ -287,13 +258,13 @@ module.exports = async (conn, m) => {
                     // Silent fail
                 }
             }
-            
+
             try {
                 const aiRes = await axios.get(`${config.aiModel}${encodeURIComponent(body)}`);
                 const response = `╭─── • 🥀 • ───╮\n   ʀ ᴇ ᴘ ʟ ʏ\n╰─── • 🥀 • ───╯\n\n${fancy(aiRes.data)}\n\n_ᴅᴇᴠᴇʟᴏᴘᴇʀ: ꜱᴛᴀɴʏᴛᴢ_`;
-                
+
                 await conn.sendMessage(from, { text: response }, { quoted: msg });
-            } catch (e) { 
+            } catch (e) {
                 console.error("AI Error:", e);
             }
         }
@@ -309,34 +280,34 @@ module.exports = async (conn, m) => {
             }
 
             const cmdPath = path.join(__dirname, 'commands');
-            
+
             try {
                 if (fs.existsSync(cmdPath)) {
                     let commandFound = false;
-                    
+
                     // Recursively search all folders for command
                     const searchCommand = async (dir) => {
                         const items = fs.readdirSync(dir);
-                        
+
                         for (const item of items) {
                             const itemPath = path.join(dir, item);
                             const stat = fs.statSync(itemPath);
-                            
+
                             if (stat.isDirectory()) {
                                 await searchCommand(itemPath);
                             } else if (item === `${command}.js`) {
                                 delete require.cache[require.resolve(itemPath)];
                                 const cmdModule = require(itemPath);
                                 commandFound = true;
-                                
+
                                 // Execute command with timeout
                                 const timeoutPromise = new Promise((_, reject) => {
                                     setTimeout(() => reject(new Error('Command timeout')), 30000);
                                 });
-                                
+
                                 await Promise.race([
-                                    cmdModule.execute(conn, msg, args, { 
-                                        from, sender, fancy, isOwner, pushname, config, conn, msg: m
+                                    cmdModule.execute(conn, msg, args, {
+                                        from, sender, fancy, isOwner, pushname, config, conn, msg
                                     }),
                                     timeoutPromise
                                 ]);
@@ -344,20 +315,20 @@ module.exports = async (conn, m) => {
                             }
                         }
                     };
-                    
+
                     await searchCommand(cmdPath);
-                    
+
                     // Command not found
                     if (!commandFound && command !== 'menu') {
-                        await conn.sendMessage(from, { 
-                            text: fancy(`❌ Command "${command}" not found.\n\n📋 Type ${config.prefix}menu for available commands.`) 
+                        await conn.sendMessage(from, {
+                            text: fancy(`❌ Command "${command}" not found.\n\n📋 Type ${config.prefix}menu for available commands.`)
                         });
                     }
                 }
             } catch (err) {
                 console.error("Command error:", err);
-                await conn.sendMessage(from, { 
-                    text: fancy(`❌ Error: ${err.message}`) 
+                await conn.sendMessage(from, {
+                    text: fancy(`❌ Error: ${err.message}`)
                 });
             }
         }
