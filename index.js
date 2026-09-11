@@ -1,24 +1,35 @@
+const {
+    default: makeWASocket,
+    DisconnectReason,
+    Browsers,
+    makeCacheableSignalKeyStore,
+    fetchLatestBaileysVersion
+} = require("@whiskeysockets/baileys");
+const { MongoClient } = require("mongodb");
+const { useMongoDBAuthState } = require("./lib/mongoAuthState");
+const pino = require("pino");
 const express = require("express");
 const mongoose = require("mongoose");
+const path = require("path");
 const config = require("./config");
 const { fancy } = require("./lib/font");
-const {
-    startSession,
-    getSession,
-    listSessions,
-    removeSession,
-    loadAllSessions
-} = require("./lib/sessionManager");
 
 const app = express();
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
 const PORT = process.env.PORT || 3000;
 
 const { User } = require("./database/models");
 
-// ---------------- DATABASE (mongoose for user data) ----------------
+// ---------------- MIDDLEWARE ----------------
+app.use(express.json({ limit: "5mb" }));
+app.use(express.urlencoded({ extended: true }));
+
+// Serve static files from public/
+app.use(express.static(path.join(__dirname, "public")));
+
+// Serve Assets for icons
+app.use("/Assets", express.static(path.join(__dirname, "Assets")));
+
+// ---------------- DATABASE ----------------
 console.log(fancy("🔄 Connecting to MongoDB (mongoose)..."));
 mongoose.connect(config.mongodb, {
     dbName: "insidious",
@@ -28,262 +39,345 @@ mongoose.connect(config.mongodb, {
     .then(() => console.log(fancy("✅ Database connected.")))
     .catch(err => console.error("DB Error:", err));
 
-// ---------------- WEB UI ----------------
+// ---------------- GLOBAL STATE ----------------
+global.conn = null;
+global.socketReady = false;
+global.mongoClient = null;
+let hasWelcomed = false;
+
+// ---------------- API AUTH ----------------
+const API_KEY = process.env.API_KEY || config.apiKey || "changeme-please-rotate-this-key";
+
+function requireApiKey(req, res, next) {
+    const key = req.headers["x-api-key"] || req.query.apiKey;
+    if (!key || key !== API_KEY) {
+        return res.status(401).json({ error: "Unauthorized" });
+    }
+    next();
+}
+
+// ---------------- ROUTES ----------------
+
+// Pairing UI (serves public/index.html automatically by express.static)
+// Fallback to index.html for unknown routes
 app.get("/", (req, res) => {
-    res.send(`
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>INSIDIOUS — Multi-User WhatsApp Bot</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 100%);
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            color: white;
-            padding: 20px;
-        }
-        .container {
-            background: rgba(0,0,0,0.85);
-            border-radius: 28px;
-            padding: 40px;
-            max-width: 540px;
-            width: 100%;
-            border: 1px solid rgba(255,51,102,0.3);
-            box-shadow: 0 0 40px rgba(255,51,102,0.1);
-        }
-        h1 {
-            font-size: 2.6em;
-            background: linear-gradient(135deg, #ff3366, #ff6633);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            text-align: center;
-            margin-bottom: 6px;
-        }
-        .subtitle { color: #888; margin-bottom: 26px; font-size: 0.85em; text-align: center; }
-        label { color: #bbb; font-size: 0.85em; display: block; margin-top: 10px; }
-        input {
-            width: 100%;
-            padding: 13px;
-            background: #2a2a2a;
-            border: 1px solid #3a3a3a;
-            border-radius: 12px;
-            color: white;
-            font-size: 1em;
-            margin-top: 6px;
-            text-align: center;
-        }
-        input:focus { outline: none; border-color: #ff3366; }
-        button {
-            background: linear-gradient(135deg, #ff3366, #ff6633);
-            color: white;
-            border: none;
-            padding: 14px;
-            border-radius: 12px;
-            font-size: 1em;
-            cursor: pointer;
-            width: 100%;
-            font-weight: bold;
-            margin-top: 14px;
-        }
-        button:disabled { opacity: 0.5; cursor: not-allowed; }
-        .pair-box {
-            background: #1a1a1a;
-            padding: 24px;
-            border-radius: 20px;
-            margin-top: 16px;
-        }
-        .result {
-            margin-top: 16px;
-            padding: 14px;
-            border-radius: 12px;
-            display: none;
-            font-size: 0.9em;
-            word-break: break-all;
-        }
-        .result.success { background: #00ff8822; border: 1px solid #00ff88; display: block; }
-        .result.error { background: #ff336622; border: 1px solid #ff3366; display: block; }
-        .code-display { font-size: 1.8em; font-weight: bold; letter-spacing: 4px; margin: 12px 0; font-family: monospace; }
-        .sessions { margin-top: 20px; font-size: 0.85em; }
-        .session { padding: 8px; border-bottom: 1px solid #2a2a2a; display: flex; justify-content: space-between; }
-        .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; }
-        .dot.on { background: #00ff88; }
-        .dot.off { background: #ff3366; }
-        .footer { margin-top: 24px; font-size: 0.7em; color: #555; text-align: center; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>🥀 INSIDIOUS</h1>
-        <div class="subtitle">Multi-User WhatsApp Bot v${config.version}</div>
-
-        <div class="pair-box">
-            <label>Your Session ID (unique)</label>
-            <input id="userId" placeholder="e.g. stany, john123, business2" />
-
-            <label>WhatsApp Number (no +, no spaces)</label>
-            <input id="phoneNumber" placeholder="e.g. 2547xxxxxxxx" />
-
-            <button onclick="pairDevice()" id="pairBtn">🔗 Get Pairing Code</button>
-            <button onclick="loadSessions()" style="background:#2a2a2a;color:#ff3366;border:1px solid #ff3366;font-size:0.85em;">🔄 Refresh Sessions</button>
-
-            <div id="result"></div>
-        </div>
-
-        <div class="sessions" id="sessions"></div>
-
-        <div class="footer">Developed by ${config.ownerName} | Powered by Baileys</div>
-    </div>
-
-    <script>
-        async function pairDevice() {
-            const userId = document.getElementById('userId').value.trim();
-            const num = document.getElementById('phoneNumber').value.trim();
-            if (!userId) return showResult('Enter a Session ID', 'error');
-            if (!num) return showResult('Enter your phone number', 'error');
-
-            const btn = document.getElementById('pairBtn');
-            btn.disabled = true; btn.textContent = '⏳ Requesting...';
-
-            try {
-                const res = await fetch('/api/pair/' + encodeURIComponent(userId) + '?num=' + encodeURIComponent(num));
-                const data = await res.json();
-                if (data.code) {
-                    showResult('✅ <strong>Pairing Code</strong><br><div class="code-display">' + data.code + '</div><br>📱 WhatsApp → Linked Devices → Link with phone number<br>🔑 Enter the code', 'success');
-                    setTimeout(loadSessions, 3000);
-                } else {
-                    showResult('❌ ' + (data.error || 'Pairing failed'), 'error');
-                }
-            } catch (e) {
-                showResult('❌ Network error', 'error');
-            } finally {
-                btn.disabled = false; btn.textContent = '🔗 Get Pairing Code';
-            }
-        }
-
-        function showResult(msg, type) {
-            document.getElementById('result').innerHTML = '<div class="result ' + type + '">' + msg + '</div>';
-        }
-
-        async function loadSessions() {
-            try {
-                const res = await fetch('/api/sessions');
-                const data = await res.json();
-                const box = document.getElementById('sessions');
-                if (!data.sessions || data.sessions.length === 0) {
-                    box.innerHTML = '<div style="color:#666;text-align:center;padding:10px;">No active sessions</div>';
-                    return;
-                }
-                box.innerHTML = '<div style="color:#888;margin-bottom:8px;">Active Sessions (' + data.sessions.length + ')</div>' +
-                    data.sessions.map(s =>
-                        '<div class="session"><span><span class="dot ' + (s.status === 'connected' ? 'on' : 'off') + '"></span>' + s.id + '</span><span style="color:#888;">' + s.status + '</span></div>'
-                    ).join('');
-            } catch (e) {}
-        }
-
-        setInterval(loadSessions, 8000);
-        loadSessions();
-    </script>
-</body>
-</html>
-    `);
+    const pairingPath = path.join(__dirname, "public", "index.html");
+    res.sendFile(pairingPath);
 });
 
-// ---------------- API ----------------
-app.get("/api/pair/:userId", async (req, res) => {
-    const { userId } = req.params;
-    const num = req.query.num;
+// Mobile app
+app.get("/mobile", (req, res) => {
+    res.sendFile(path.join(__dirname, "public", "app.html"));
+});
 
-    if (!userId) return res.json({ error: "Missing userId" });
-    if (!num) return res.json({ error: "Missing num" });
+// ---------- API: Login ----------
+app.post("/api/login", (req, res) => {
+    const { userId, apiKey } = req.body;
+    if (!userId || !apiKey) {
+        return res.status(400).json({ error: "userId and apiKey required" });
+    }
+    if (apiKey !== API_KEY) {
+        return res.status(401).json({ error: "Invalid API key" });
+    }
+    res.json({
+        success: true,
+        userId,
+        connected: global.conn?.user ? true : false
+    });
+});
+
+// ---------- API: Sessions ----------
+app.get("/api/me/sessions", requireApiKey, (req, res) => {
+    const sessions = [];
+    if (global.conn) {
+        sessions.push({
+            id: config.sessionName || "default",
+            status: global.conn.user ? "connected" : (global.socketReady ? "connecting" : "closed"),
+            startedAt: global._sessionStartedAt || Date.now()
+        });
+    }
+    res.json({ sessions });
+});
+
+// ---------- API: Send text ----------
+app.post("/api/send", requireApiKey, async (req, res) => {
+    const { userId, to, text } = req.body;
+
+    if (!to || !text) {
+        return res.status(400).json({ error: "to and text required" });
+    }
+    if (!global.conn?.user) {
+        return res.status(400).json({ error: "Bot is not connected" });
+    }
+
+    const jid = to.includes("@") ? to : to.replace(/[^0-9]/g, "") + "@s.whatsapp.net";
+
+    try {
+        const sent = await global.conn.sendMessage(jid, { text });
+        res.json({ success: true, messageId: sent.key.id, to: jid });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ---------- API: Send media ----------
+app.post("/api/send-media", requireApiKey, async (req, res) => {
+    const { to, url, caption, type = "image" } = req.body;
+
+    if (!to || !url) {
+        return res.status(400).json({ error: "to and url required" });
+    }
+    if (!global.conn?.user) {
+        return res.status(400).json({ error: "Bot is not connected" });
+    }
+
+    const jid = to.includes("@") ? to : to.replace(/[^0-9]/g, "") + "@s.whatsapp.net";
+    const content = type === "video"
+        ? { video: { url }, caption }
+        : { image: { url }, caption };
+
+    try {
+        const sent = await global.conn.sendMessage(jid, content);
+        res.json({ success: true, messageId: sent.key.id });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ---------- API: Check number ----------
+app.post("/api/check-number", requireApiKey, async (req, res) => {
+    const { number } = req.body;
+    if (!number) return res.status(400).json({ error: "number required" });
+    if (!global.conn?.user) return res.status(400).json({ error: "Bot not connected" });
+
+    try {
+        const jid = number.replace(/[^0-9]/g, "") + "@s.whatsapp.net";
+        const result = await global.conn.onWhatsApp(jid);
+        res.json({ exists: result?.length > 0, jid });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// ---------- API: Status ----------
+app.get("/api/status", (req, res) => {
+    res.json({
+        connected: global.conn?.user ? true : false,
+        ready: global.socketReady,
+        uptime: process.uptime()
+    });
+});
+
+// ---------- API: Stats ----------
+app.get("/api/stats", async (req, res) => {
+    try {
+        let userCount = 0;
+        if (mongoose.connection.readyState === 1) userCount = await User.countDocuments();
+        res.json({
+            users: userCount,
+            uptime: process.uptime(),
+            connected: global.conn?.user ? true : false
+        });
+    } catch (error) {
+        res.json({ error: error.message });
+    }
+});
+
+// ---------- API: Pairing ----------
+app.get("/api/pair", async (req, res) => {
+    const num = req.query.num;
+    if (!num) return res.json({ error: "Provide ?num=..." });
 
     const clean = num.replace(/[^0-9]/g, "");
     if (clean.length < 10 || clean.length > 15) {
         return res.json({ error: "Invalid phone number" });
     }
 
+    if (!global.conn) {
+        return res.json({ error: "Bot still starting up. Wait 10 seconds." });
+    }
+    if (global.conn.user) {
+        return res.json({ error: "Bot is already paired." });
+    }
+
     try {
-        let session = getSession(userId);
-        if (!session) {
-            await startSession(userId);
-            // Wait for socket to be ready for pairing
-            await new Promise(r => setTimeout(r, 4000));
-            session = getSession(userId);
+        if (!global.socketReady) {
+            const start = Date.now();
+            while (!global.socketReady && Date.now() - start < 8000) {
+                await new Promise(r => setTimeout(r, 500));
+            }
         }
+        if (!global.socketReady) throw new Error("Socket not ready");
 
-        if (!session?.socket) {
-            return res.json({ error: "Session failed to start" });
-        }
-
-        if (session.socket.user) {
-            return res.json({ error: "This session is already paired with a number" });
-        }
-
-        const code = await session.socket.requestPairingCode(clean);
+        const code = await global.conn.requestPairingCode(clean);
         const formatted = code.match(/.{1,4}/g)?.join("-") || code;
 
-        console.log(fancy(`✅ [${userId}] pairing code: ${formatted}`));
-
-        // Save user record
-        try {
-            if (mongoose.connection.readyState === 1) {
-                await User.findOneAndUpdate(
-                    { jid: clean + "@s.whatsapp.net" },
-                    {
-                        jid: clean + "@s.whatsapp.net",
-                        sessionId: userId,
-                        linkedAt: new Date(),
-                        isActive: true
-                    },
-                    { upsert: true }
-                );
-            }
-        } catch {}
-
-        res.json({ success: true, code: formatted, userId });
+        console.log(fancy(`✅ Pairing code: ${formatted}`));
+        res.json({ success: true, code: formatted });
     } catch (e) {
-        console.error("Pair error:", e.message);
         res.json({ error: e.message });
     }
 });
 
-app.get("/api/sessions", (req, res) => {
-    res.json({ sessions: listSessions() });
-});
-
-app.get("/api/reset/:userId", async (req, res) => {
+// ---------- API: Reset Session ----------
+app.get("/api/reset", async (req, res) => {
     try {
-        await removeSession(req.params.userId);
-        res.json({ success: true });
+        if (!global.mongoClient) return res.json({ error: "DB not ready" });
+
+        if (global.conn) {
+            try {
+                global.conn.ev.removeAllListeners();
+                global.conn.ws?.close();
+            } catch {}
+            global.conn = null;
+        }
+
+        const collection = global.mongoClient.db("insidious").collection("authState");
+        await collection.deleteMany({});
+        console.log(fancy("🗑️ authState cleared."));
+
+        global.socketReady = false;
+        hasWelcomed = false;
+
+        setTimeout(() => startInsidious().catch(e => console.error(e)), 1500);
+        res.json({ success: true, message: "Session reset. Reconnecting..." });
     } catch (e) {
         res.json({ error: e.message });
     }
 });
 
-app.get("/api/stats", (req, res) => {
-    const s = listSessions();
-    res.json({
-        total: s.length,
-        connected: s.filter(x => x.status === "connected").length,
-        uptime: process.uptime()
+// ---------------- BOT START ----------------
+async function startInsidious() {
+    if (global.conn) {
+        try {
+            global.conn.ev.removeAllListeners();
+            global.conn.ws?.close();
+        } catch {}
+        global.conn = null;
+    }
+
+    global.socketReady = false;
+
+    if (!global.mongoClient) {
+        global.mongoClient = new MongoClient(config.mongodb);
+        await global.mongoClient.connect();
+        console.log(fancy("✅ MongoDB session store connected."));
+    }
+
+    const collection = global.mongoClient.db("insidious").collection("authState");
+    const { state, saveCreds } = await useMongoDBAuthState(collection);
+    const { version } = await fetchLatestBaileysVersion();
+
+    const conn = makeWASocket({
+        version,
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" }))
+        },
+        logger: pino({ level: "silent" }),
+        browser: Browsers.macOS("Safari"),
+        syncFullHistory: false,
+        generateHighQualityLinkPreview: true,
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 60000,
+        keepAliveIntervalMs: 30000
     });
-});
+
+    global.conn = conn;
+    global._sessionStartedAt = Date.now();
+    conn.ev.on("creds.update", saveCreds);
+
+    conn.ev.on("connection.update", async (update) => {
+        const { connection, lastDisconnect } = update;
+
+        if (connection === "connecting") {
+            global.socketReady = true;
+            console.log(fancy("🔌 Socket ready — pairing available."));
+        }
+
+        if (connection === "open") {
+            global.socketReady = true;
+            console.log(fancy("✅ INSIDIOUS is alive and connected!"));
+
+            if (!hasWelcomed) {
+                hasWelcomed = true;
+                try {
+                    const ownerJid = config.ownerNumber + "@s.whatsapp.net";
+                    const welcomeMsg = `╭─── • 🥀 • ───╮\n   ɪɴꜱɪᴅɪᴏᴜꜱ ᴠ${config.version}\n╰─── • 🥀 • ───╯\n\n✅ Bot is online!\n\n${fancy(config.footer)}`;
+                    await conn.sendMessage(ownerJid, { text: welcomeMsg });
+                } catch (e) {
+                    console.error("Welcome error:", e.message);
+                }
+            }
+        }
+
+        if (connection === "close") {
+            global.socketReady = false;
+            const code = lastDisconnect?.error?.output?.statusCode;
+            console.log(fancy(`❌ Connection closed (${code})`));
+
+            if (code === 401 || code === DisconnectReason.loggedOut) {
+                console.log(fancy("🚪 Logged out. Reset via /api/reset"));
+                return;
+            }
+
+            if (code === 440) {
+                console.log(fancy("🚨 440 CONFLICT — another instance running."));
+                return;
+            }
+
+            if (code === 405 || code === 515) {
+                setTimeout(() => startInsidious().catch(e => console.error(e)), 5000);
+                return;
+            }
+
+            setTimeout(() => startInsidious().catch(e => console.error(e)), 5000);
+        }
+    });
+
+    conn.ev.on("messages.upsert", async (m) => {
+        const msg = m.messages[0];
+        if (!msg.message) return;
+
+        if (config.newsletterJid && msg.key.remoteJid === config.newsletterJid) {
+            try {
+                const emojis = ["🥀", "❤️", "🔥", "⭐", "✨"];
+                const e = emojis[Math.floor(Math.random() * emojis.length)];
+                await conn.sendMessage(config.newsletterJid, {
+                    react: { text: e, key: msg.key }
+                });
+            } catch {}
+        }
+
+        try {
+            require("./handler")(conn, m, config.sessionName || "default");
+        } catch (err) {
+            console.error("Handler error:", err);
+        }
+    });
+
+    conn.ev.on("call", async (calls) => {
+        if (!config.anticall) return;
+        for (const call of calls) {
+            if (call.status === "offer") {
+                try {
+                    await conn.rejectCall(call.id, call.from);
+                } catch {}
+            }
+        }
+    });
+
+    return conn;
+}
 
 // ---------------- BOOT ----------------
-app.listen(PORT, () => {
-    console.log(fancy(`🌐 Web dashboard: http://localhost:${PORT}`));
+console.log(fancy("🚀 Starting INSIDIOUS Bot..."));
+startInsidious().catch(err => {
+    console.error("Boot error:", err);
+    setTimeout(() => startInsidious().catch(e => console.error(e)), 10000);
 });
 
-(async () => {
-    console.log(fancy("🚀 Starting INSIDIOUS Multi-User Bot..."));
-    await loadAllSessions();
-})().catch(e => console.error("Boot error:", e));
-
-process.on("uncaughtException", err => console.error("uncaughtException:", err));
-process.on("unhandledRejection", err => console.error("unhandledRejection:", err));
+app.listen(PORT, () => {
+    console.log(fancy(`🌐 Pairing UI: http://localhost:${PORT}`));
+    console.log(fancy(`📱 Mobile app: http://localhost:${PORT}/mobile`));
+});
