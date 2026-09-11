@@ -1,69 +1,104 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('../../config');
+const { fancy } = require('../../lib/font');
 
 module.exports = {
     name: "menu",
-    aliases: ["help", "cmds", "commands"],
-    description: "Show all commands",
-    execute: async (conn, msg, args, { from }) => {
+    aliases: ["help", "cmds", "commands", "m"],
+    description: "Show all commands grouped by category",
+    execute: async (conn, msg, args, { from, sender, pushname }) => {
         try {
             const cmdPath = path.join(__dirname, '../../commands');
 
-            let text = `╭─── • 🥀 • ───╮\n`;
-            text += `  ${config.botName} v${config.version}\n`;
-            text += `╰─── • 🥀 • ───╯\n\n`;
-            text += `👑 Owner: ${config.ownerName}\n`;
-            text += `⚙️ Prefix: ${config.prefix}\n\n`;
-
-            const pick = args[0] ? args[0].toLowerCase() : null;
-
             if (!fs.existsSync(cmdPath)) {
-                return await conn.sendMessage(from, { text: "❌ No commands folder found." }, { quoted: msg });
+                return await conn.sendMessage(from, {
+                    text: fancy("❌ Commands folder not found.")
+                }, { quoted: msg });
             }
 
-            const categories = fs.readdirSync(cmdPath).filter(f => {
-                return fs.statSync(path.join(cmdPath, f)).isDirectory();
-            }).sort();
+            // ---------------- Collect commands by category ----------------
+            const categories = fs.readdirSync(cmdPath)
+                .filter(f => fs.statSync(path.join(cmdPath, f)).isDirectory())
+                .sort();
 
-            // Show one category
-            if (pick && !isNaN(parseInt(pick))) {
-                const idx = parseInt(pick) - 1;
-                if (idx < 0 || idx >= categories.length) {
-                    return await conn.sendMessage(from, { text: "❌ Invalid category number." }, { quoted: msg });
+            let totalCmds = 0;
+            let body = "";
+
+            for (const cat of categories) {
+                const catPath = path.join(cmdPath, cat);
+                const files = fs.readdirSync(catPath).filter(f => f.endsWith('.js'));
+
+                if (files.length === 0) continue;
+
+                body += `\n╭─── • 📁 • ───╮\n`;
+                body += `   ${cat.toUpperCase()}\n`;
+                body += `╰─── • 📁 • ───╯\n`;
+
+                for (const file of files.sort()) {
+                    const cmdName = file.replace('.js', '');
+                    body += `│ ◦ ${config.prefix}${cmdName}\n`;
+                    totalCmds++;
                 }
-
-                const cat = categories[idx];
-                const files = fs.readdirSync(path.join(cmdPath, cat)).filter(f => f.endsWith('.js'));
-
-                let out = `╭─── • 📁 • ───╮\n  ${cat.toUpperCase()}\n╰─── • 📁 • ───╯\n\n`;
-                out += `Commands (${files.length}):\n\n`;
-
-                for (const file of files) {
-                    out += `◦ ${config.prefix}${file.replace('.js', '')}\n`;
-                }
-
-                out += `\n_Type ${config.prefix}menu to go back_`;
-                return await conn.sendMessage(from, { text: out }, { quoted: msg });
+                body += `\n`;
             }
 
-            // Show main menu
-            text += `📂 CATEGORIES:\n\n`;
-            categories.forEach((cat, i) => {
-                const files = fs.readdirSync(path.join(cmdPath, cat)).filter(f => f.endsWith('.js'));
-                text += `${i + 1}. ${cat.toUpperCase()} (${files.length})\n`;
-            });
+            // ---------------- Assemble full menu text ----------------
+            const uptime = process.uptime();
+            const days = Math.floor(uptime / 86400);
+            const hours = Math.floor((uptime % 86400) / 3600);
+            const minutes = Math.floor((uptime % 3600) / 60);
 
-            text += `\n📖 HOW TO USE:\n`;
-            text += `◦ ${config.prefix}menu 1  → open category 1\n`;
-            text += `◦ ${config.prefix}menu all → every command\n\n`;
-            text += `_${config.footer}_`;
+            const header =
+                `╭─── • 🥀 • ───╮\n` +
+                `   ${fancy(config.botName.toUpperCase())} ᴠ${config.version}\n` +
+                `╰─── • 🥀 • ───╯\n\n` +
+                `│ 👑 Owner: ${config.ownerName}\n` +
+                `│ ⚙️ Prefix: ${config.prefix}\n` +
+                `│ 📦 Commands: ${totalCmds}\n` +
+                `│ ⏱️ Uptime: ${days}d ${hours}h ${minutes}m\n` +
+                `│ 🎯 Mode: ${config.workMode.toUpperCase()}\n`;
 
-            await conn.sendMessage(from, { text }, { quoted: msg });
+            const footer =
+                `\n╭─── • 💡 • ───╮\n` +
+                `   ʜᴏᴡ ᴛᴏ ᴜꜱᴇ\n` +
+                `╰─── • 💡 • ───╯\n` +
+                `│ ◦ Type ${config.prefix}<command>\n` +
+                `│ ◦ Example: ${config.prefix}ping\n` +
+                `│ ◦ Help: ${config.prefix}menu\n\n` +
+                `${fancy(config.footer)}`;
+
+            const fullMenu = header + body + footer;
+
+            // ---------------- Load image from Assets ----------------
+            const imagePath = path.join(__dirname, '../../Assets/menu.png');
+            const fallbackPath = path.join(__dirname, '../../Assets/menu.jpg');
+
+            let imageBuffer = null;
+            if (fs.existsSync(imagePath)) {
+                imageBuffer = fs.readFileSync(imagePath);
+            } else if (fs.existsSync(fallbackPath)) {
+                imageBuffer = fs.readFileSync(fallbackPath);
+            }
+
+            // ---------------- Send ----------------
+            if (imageBuffer) {
+                await conn.sendMessage(from, {
+                    image: imageBuffer,
+                    caption: fullMenu
+                }, { quoted: msg });
+            } else {
+                // Fallback: send text only if image missing
+                await conn.sendMessage(from, {
+                    text: fullMenu
+                }, { quoted: msg });
+            }
 
         } catch (e) {
             console.error("Menu error:", e);
-            await conn.sendMessage(from, { text: "❌ Menu error: " + e.message }, { quoted: msg });
+            await conn.sendMessage(from, {
+                text: fancy("❌ Menu error: " + e.message)
+            }, { quoted: msg });
         }
     }
 };
