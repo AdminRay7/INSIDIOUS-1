@@ -4,6 +4,7 @@ const axios = require('axios');
 const config = require('./config');
 const { fancy } = require('./lib/font');
 const { User, ChannelSubscriber } = require('./database/models');
+const messageStore = require('./lib/messageStore');
 
 // ---------------- COMMAND CACHE ----------------
 const commandCache = new Map();
@@ -42,7 +43,6 @@ function loadCommands() {
     console.log(`✅ Loaded ${commandCache.size} commands into cache.`);
 }
 
-// Load once at startup
 loadCommands();
 
 // ---------------- HANDLER ----------------
@@ -71,6 +71,86 @@ module.exports = async (conn, m, userId = "default") => {
 
         // SKIP CHANNEL MESSAGES
         if (from === config.newsletterJid) return;
+
+        // ---------------- ANTIDELETE: SAVE MESSAGES ----------------
+        if (config.antidelete && msg.key?.id && !msg.key.fromMe) {
+            try {
+                messageStore.save(msg.key.id, {
+                    msg,
+                    from,
+                    sender,
+                    pushname,
+                    userId,
+                    timestamp: Date.now()
+                });
+            } catch (e) { /* silent */ }
+        }
+
+        // ---------------- ANTIDELETE: HANDLE REVOKE ----------------
+        const isRevoke =
+            type === 'protocolMessage' &&
+            msg.message.protocolMessage?.type === 0;
+
+        if (isRevoke && config.antidelete) {
+            try {
+                const deletedKey = msg.message.protocolMessage.key;
+                const original = messageStore.get(deletedKey.id);
+
+                if (original) {
+                    const who = msg.key.participant || msg.key.remoteJid;
+                    const whoNumber = who.split('@')[0];
+
+                    await conn.sendMessage(from, {
+                        text: fancy(`🚨 ᴀɴᴛɪᴅᴇʟᴇᴛᴇ\n@${whoNumber} deleted a message:`),
+                        mentions: [who]
+                    });
+
+                    const originalMsg = original.msg;
+                    const originalText =
+                        originalMsg.message?.conversation ||
+                        originalMsg.message?.extendedTextMessage?.text;
+
+                    if (originalText) {
+                        await conn.sendMessage(from, {
+                            text: `📄 ᴅᴇʟᴇᴛᴇᴅ ᴍᴇꜱꜱᴀɢᴇ:\n\n${originalText}`
+                        });
+                    } else if (originalMsg.message?.imageMessage) {
+                        await conn.sendMessage(from, {
+                            image: { url: originalMsg.message.imageMessage.url },
+                            caption: `📷 ᴅᴇʟᴇᴛᴇᴅ ɪᴍᴀɢᴇ`
+                        }).catch(() => {});
+                    } else if (originalMsg.message?.videoMessage) {
+                        await conn.sendMessage(from, {
+                            video: { url: originalMsg.message.videoMessage.url },
+                            caption: `🎥 ᴅᴇʟᴇᴛᴇᴅ ᴠɪᴅᴇᴏ`
+                        }).catch(() => {});
+                    } else if (originalMsg.message?.stickerMessage) {
+                        await conn.sendMessage(from, {
+                            sticker: { url: originalMsg.message.stickerMessage.url }
+                        }).catch(() => {});
+                    } else if (originalMsg.message?.audioMessage) {
+                        await conn.sendMessage(from, {
+                            audio: { url: originalMsg.message.audioMessage.url },
+                            mimetype: 'audio/mp4'
+                        }).catch(() => {});
+                    }
+
+                    // Forward to owner as audit log
+                    if (config.ownerNumber && sender.split('@')[0] !== config.ownerNumber) {
+                        try {
+                            await conn.sendMessage(config.ownerNumber + '@s.whatsapp.net', {
+                                text: `🚨 ᴀɴᴛɪᴅᴇʟᴇᴛᴇ ʟᴏɢ\n\nFrom: ${pushname} (${sender})\nChat: ${from}\nSession: ${userId}\n\nDeleted: ${originalText || '[media]'}`
+                            });
+                        } catch {}
+                    }
+
+                    messageStore.remove(deletedKey.id);
+                }
+            } catch (e) {
+                console.error("Antidelete error:", e);
+            }
+            return;
+        }
 
         // AUTO READ
         if (config.autoRead) {
@@ -111,9 +191,7 @@ module.exports = async (conn, m, userId = "default") => {
                     user.lastActive = new Date();
                 }
                 await user.save();
-            } catch (error) {
-                // silent
-            }
+            } catch (error) { /* silent */ }
         }
 
         // WORK MODE CHECK
@@ -218,7 +296,6 @@ module.exports = async (conn, m, userId = "default") => {
 
         // GROUP SECURITY FEATURES
         if (isGroup && !isOwner) {
-            // ANTI-LINK
             if (config.antilink && body && body.match(/https?:\/\//gi)) {
                 try {
                     await conn.sendMessage(from, { delete: msg.key });
@@ -232,7 +309,6 @@ module.exports = async (conn, m, userId = "default") => {
                 }
             }
 
-            // ANTI-SCAM
             if (config.antiscam && body && config.scamWords.some(w => body.toLowerCase().includes(w))) {
                 try {
                     await conn.sendMessage(from, { delete: msg.key });
@@ -246,7 +322,6 @@ module.exports = async (conn, m, userId = "default") => {
                 }
             }
 
-            // ANTI-PORN
             if (config.antiporn && body && config.pornWords.some(w => body.toLowerCase().includes(w))) {
                 try {
                     await conn.sendMessage(from, { delete: msg.key });
@@ -260,7 +335,6 @@ module.exports = async (conn, m, userId = "default") => {
                 }
             }
 
-            // ANTI-MEDIA
             if (config.antimedia !== 'off') {
                 const mediaTypes = {
                     'imageMessage': 'photo',
