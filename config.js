@@ -34,6 +34,7 @@ module.exports = {
     antiporn: true,
     antitag: false,
     antimedia: "off",
+    antidelete: true,
     workMode: "public",
 
     // Auto Status
