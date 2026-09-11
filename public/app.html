@@ -1,1 +1,470 @@
-.
+.<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#ff3366">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="INSIDIOUS">
+    <title>INSIDIOUS Mobile</title>
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/Assets/menu.jpg">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a0a;
+            color: #fff;
+            min-height: 100vh;
+            padding-bottom: 90px;
+            overflow-x: hidden;
+        }
+        header {
+            position: sticky; top: 0; z-index: 100;
+            background: linear-gradient(180deg, #0a0a0a 0%, #141414 100%);
+            border-bottom: 1px solid #1f1f1f;
+            padding: 14px 16px;
+            padding-top: calc(14px + env(safe-area-inset-top));
+        }
+        header h1 {
+            font-size: 1.15em;
+            background: linear-gradient(135deg, #ff3366, #ff6633);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            font-weight: 800;
+            letter-spacing: 0.5px;
+        }
+        .status-bar {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.75em;
+            color: #888;
+            margin-top: 4px;
+        }
+        .dot {
+            width: 8px; height: 8px;
+            border-radius: 50%;
+            background: #ff3366;
+            display: inline-block;
+        }
+        .dot.on { background: #00ff88; box-shadow: 0 0 6px #00ff88; }
+
+        .container { padding: 16px; max-width: 640px; margin: 0 auto; }
+
+        .card {
+            background: #141414;
+            border: 1px solid #1f1f1f;
+            border-radius: 16px;
+            padding: 18px;
+            margin-bottom: 14px;
+        }
+        .card h3 {
+            font-size: 0.95em;
+            color: #ff3366;
+            margin-bottom: 12px;
+            font-weight: 700;
+        }
+
+        label {
+            display: block;
+            font-size: 0.75em;
+            color: #888;
+            margin-bottom: 4px;
+            margin-top: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        input, textarea {
+            width: 100%;
+            padding: 13px 14px;
+            background: #1f1f1f;
+            border: 1px solid #2a2a2a;
+            border-radius: 12px;
+            color: #fff;
+            font-size: 0.95em;
+            font-family: inherit;
+            transition: border-color 0.2s;
+        }
+        input:focus, textarea:focus {
+            outline: none;
+            border-color: #ff3366;
+        }
+        textarea { resize: vertical; min-height: 80px; }
+
+        button {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #ff3366, #ff6633);
+            border: none;
+            border-radius: 12px;
+            color: #fff;
+            font-size: 0.95em;
+            font-weight: 700;
+            cursor: pointer;
+            margin-top: 12px;
+            transition: transform 0.1s, opacity 0.2s;
+        }
+        button:active { transform: scale(0.98); }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+        .btn-secondary {
+            background: #1f1f1f;
+            color: #ff3366;
+            border: 1px solid #ff3366;
+        }
+
+        .msg {
+            padding: 12px 14px;
+            margin-top: 10px;
+            border-radius: 10px;
+            font-size: 0.85em;
+            line-height: 1.4;
+            word-break: break-all;
+        }
+        .msg.ok { background: #00ff8815; border-left: 3px solid #00ff88; color: #7effc8; }
+        .msg.err { background: #ff336615; border-left: 3px solid #ff3366; color: #ff88a0; }
+        .msg.info { background: #ffffff10; border-left: 3px solid #888; color: #ccc; }
+
+        .hidden { display: none !important; }
+
+        .session-pill {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: #1a1a1a;
+            padding: 10px 14px;
+            border-radius: 10px;
+            margin-bottom: 6px;
+            font-size: 0.85em;
+        }
+        .session-pill .name { color: #ddd; }
+        .session-pill .status { color: #888; font-size: 0.9em; }
+        .session-pill .status.on { color: #00ff88; }
+
+        .tab-bar {
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            background: #0f0f0f;
+            border-top: 1px solid #1f1f1f;
+            display: flex;
+            padding-bottom: env(safe-area-inset-bottom);
+            z-index: 100;
+        }
+        .tab {
+            flex: 1;
+            padding: 12px 4px;
+            text-align: center;
+            font-size: 0.7em;
+            color: #666;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+        .tab.active { color: #ff3366; font-weight: 700; }
+        .tab .icon { font-size: 1.6em; display: block; margin-bottom: 2px; }
+
+        .empty {
+            text-align: center;
+            padding: 30px 20px;
+            color: #555;
+            font-size: 0.85em;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>🥀 INSIDIOUS</h1>
+        <div class="status-bar">
+            <span class="dot" id="statusDot"></span>
+            <span id="statusText">Not connected</span>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- LOGIN VIEW -->
+        <div id="loginView">
+            <div class="card">
+                <h3>🔐 Connect to Bot</h3>
+                <label>Session ID</label>
+                <input id="userIdInput" placeholder="e.g. stany" autocomplete="username" />
+                <label>API Key</label>
+                <input id="apiKeyInput" type="password" placeholder="Your secret API key" autocomplete="current-password" />
+                <button onclick="login()">Connect</button>
+                <div id="loginResult"></div>
+            </div>
+        </div>
+
+        <!-- MAIN APP VIEW -->
+        <div id="mainView" class="hidden">
+            <!-- SEND MESSAGE -->
+            <div id="tabSend">
+                <div class="card">
+                    <h3>📤 Send Message</h3>
+                    <label>Recipient Number</label>
+                    <input id="toInput" type="tel" placeholder="254712345678" />
+                    <label>Message</label>
+                    <textarea id="textInput" placeholder="Type your message..."></textarea>
+                    <button onclick="sendMessage()" id="sendBtn">Send via WhatsApp</button>
+                    <div id="sendResult"></div>
+                </div>
+
+                <div class="card">
+                    <h3>🖼️ Send Media</h3>
+                    <label>Recipient Number</label>
+                    <input id="toMediaInput" type="tel" placeholder="254712345678" />
+                    <label>Image URL</label>
+                    <input id="mediaUrlInput" placeholder="https://example.com/image.jpg" />
+                    <label>Caption (optional)</label>
+                    <input id="mediaCaptionInput" placeholder="Caption..." />
+                    <button onclick="sendMedia()" class="btn-secondary">Send Image</button>
+                    <div id="mediaResult"></div>
+                </div>
+            </div>
+
+            <!-- SESSIONS -->
+            <div id="tabSessions" class="hidden">
+                <div class="card">
+                    <h3>📱 Active Sessions</h3>
+                    <div id="sessionsList"></div>
+                    <button onclick="loadSessions()" class="btn-secondary">🔄 Refresh</button>
+                </div>
+            </div>
+
+            <!-- ACCOUNT -->
+            <div id="tabAccount" class="hidden">
+                <div class="card">
+                    <h3>👤 Account</h3>
+                    <label>Session ID</label>
+                    <input id="accountSessionId" readonly />
+                    <button onclick="logout()" class="btn-secondary" style="margin-top:16px;">Logout</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- TAB BAR -->
+    <div class="tab-bar hidden" id="tabBar">
+        <div class="tab active" data-tab="Send" onclick="switchTab('Send')">
+            <span class="icon">💬</span>Send
+        </div>
+        <div class="tab" data-tab="Sessions" onclick="switchTab('Sessions')">
+            <span class="icon">📱</span>Sessions
+        </div>
+        <div class="tab" data-tab="Account" onclick="switchTab('Account')">
+            <span class="icon">👤</span>Account
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = location.origin;
+        let state = { userId: null, apiKey: null };
+
+        // Restore auth on load
+        try {
+            const saved = localStorage.getItem("insidious_auth");
+            if (saved) {
+                state = JSON.parse(saved);
+                showMain();
+            }
+        } catch {}
+
+        // ---------------- LOGIN ----------------
+        async function login() {
+            const userId = document.getElementById("userIdInput").value.trim();
+            const apiKey = document.getElementById("apiKeyInput").value.trim();
+            const out = document.getElementById("loginResult");
+
+            if (!userId || !apiKey) {
+                out.innerHTML = '<div class="msg err">Fill both fields</div>';
+                return;
+            }
+
+            out.innerHTML = '<div class="msg info">Connecting...</div>';
+
+            try {
+                const res = await fetch(API_BASE + "/api/login", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ userId, apiKey })
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    state = { userId, apiKey };
+                    localStorage.setItem("insidious_auth", JSON.stringify(state));
+                    out.innerHTML = '<div class="msg ok">✅ Connected!</div>';
+                    setTimeout(showMain, 400);
+                } else {
+                    out.innerHTML = '<div class="msg err">❌ ' + (data.error || "Login failed") + '</div>';
+                }
+            } catch (e) {
+                out.innerHTML = '<div class="msg err">❌ Network error</div>';
+            }
+        }
+
+        function logout() {
+            if (!confirm("Logout from this device?")) return;
+            localStorage.removeItem("insidious_auth");
+            location.reload();
+        }
+
+        function showMain() {
+            document.getElementById("loginView").classList.add("hidden");
+            document.getElementById("mainView").classList.remove("hidden");
+            document.getElementById("tabBar").classList.remove("hidden");
+            document.getElementById("accountSessionId").value = state.userId;
+            checkStatus();
+            loadSessions();
+        }
+
+        // ---------------- TAB SWITCHING ----------------
+        function switchTab(name) {
+            ["Send", "Sessions", "Account"].forEach(t => {
+                document.getElementById("tab" + t).classList.toggle("hidden", t !== name);
+            });
+            document.querySelectorAll(".tab").forEach(el => {
+                el.classList.toggle("active", el.dataset.tab === name);
+            });
+            if (name === "Sessions") loadSessions();
+        }
+
+        // ---------------- STATUS ----------------
+        async function checkStatus() {
+            if (!state.userId) return;
+            try {
+                const res = await fetch(API_BASE + "/api/me/sessions", {
+                    headers: { "x-api-key": state.apiKey }
+                });
+                const data = await res.json();
+                const mine = (data.sessions || []).find(s => s.id === state.userId);
+                const dot = document.getElementById("statusDot");
+                const txt = document.getElementById("statusText");
+
+                if (mine?.status === "connected") {
+                    dot.classList.add("on");
+                    txt.textContent = "Connected as " + state.userId;
+                } else if (mine) {
+                    dot.classList.remove("on");
+                    txt.textContent = "Status: " + mine.status;
+                } else {
+                    dot.classList.remove("on");
+                    txt.textContent = "Session not found";
+                }
+            } catch {}
+        }
+
+        // ---------------- SEND MESSAGE ----------------
+        async function sendMessage() {
+            const to = document.getElementById("toInput").value.trim();
+            const text = document.getElementById("textInput").value.trim();
+            const out = document.getElementById("sendResult");
+            const btn = document.getElementById("sendBtn");
+
+            if (!to || !text) {
+                out.innerHTML = '<div class="msg err">Fill both fields</div>';
+                return;
+            }
+
+            btn.disabled = true;
+            btn.textContent = "Sending...";
+            out.innerHTML = '';
+
+            try {
+                const res = await fetch(API_BASE + "/api/send", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "x-api-key": state.apiKey
+                    },
+                    body: JSON.stringify({ userId: state.userId, to, text })
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    out.innerHTML = '<div class="msg ok">✅ Sent!<br>ID: ' + data.messageId + '</div>';
+                    document.getElementById("textInput").value = "";
+                } else {
+                    out.innerHTML = '<div class="msg err">❌ ' + data.error + '</div>';
+                }
+            } catch (e) {
+                out.innerHTML = '<div class="msg err">❌ Network error</div>';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = "Send via WhatsApp";
+            }
+        }
+
+        // ---------------- SEND MEDIA ----------------
+        async function sendMedia() {
+            const to = document.getElementById("toMediaInput").value.trim();
+            const url = document.getElementById("mediaUrlInput").value.trim();
+            const caption = document.getElementById("mediaCaptionInput").value.trim();
+            const out = document.getElementById("mediaResult");
+
+            if (!to || !url) {
+                out.innerHTML = '<div class="msg err">Fill number and URL</div>';
+                return;
+            }
+
+            out.innerHTML = '<div class="msg info">Sending media...</div>';
+
+            try {
+                const res = await fetch(API_BASE + "/api/send-media", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        "x-api-key": state.apiKey
+                    },
+                    body: JSON.stringify({ userId: state.userId, to, url, caption, type: "image" })
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    out.innerHTML = '<div class="msg ok">✅ Image sent!</div>';
+                    document.getElementById("mediaUrlInput").value = "";
+                    document.getElementById("mediaCaptionInput").value = "";
+                } else {
+                    out.innerHTML = '<div class="msg err">❌ ' + data.error + '</div>';
+                }
+            } catch (e) {
+                out.innerHTML = '<div class="msg err">❌ Network error</div>';
+            }
+        }
+
+        // ---------------- SESSIONS ----------------
+        async function loadSessions() {
+            const list = document.getElementById("sessionsList");
+            if (!list) return;
+
+            list.innerHTML = '<div class="empty">Loading...</div>';
+
+            try {
+                const res = await fetch(API_BASE + "/api/me/sessions", {
+                    headers: { "x-api-key": state.apiKey }
+                });
+                const data = await res.json();
+
+                if (!data.sessions || data.sessions.length === 0) {
+                    list.innerHTML = '<div class="empty">No active sessions</div>';
+                    return;
+                }
+
+                list.innerHTML = data.sessions.map(s => `
+                    <div class="session-pill">
+                        <span class="name">${s.id}</span>
+                        <span class="status ${s.status === "connected" ? "on" : ""}">${s.status}</span>
+                    </div>
+                `).join("");
+            } catch (e) {
+                list.innerHTML = '<div class="msg err">Failed to load</div>';
+            }
+        }
+
+        // Auto-refresh status
+        setInterval(() => {
+            if (state.userId) checkStatus();
+        }, 15000);
+    </script>
+</body>
+</html>
