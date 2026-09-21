@@ -29,6 +29,9 @@ function loadCommands() {
                         ...(Array.isArray(mod.aliases) ? mod.aliases : [])
                     ].filter(Boolean).map(s => s.toLowerCase());
                     for (const n of names) {
+                        if (commandCache.has(n)) {
+                            console.warn(`⚠️ Duplicate command name "${n}" — overwriting.`);
+                        }
                         commandCache.set(n, mod);
                     }
                 } catch (e) {
@@ -44,6 +47,37 @@ function loadCommands() {
 }
 
 loadCommands();
+
+// ---------------- BUTTON/INTERACTIVE ROUTER ----------------
+/**
+ * Look for any command module that exposes handleButton() or handleList()
+ * and dispatch the interaction. Returns true if handled.
+ */
+async function routeButtonInteraction(conn, msg, ctx) {
+    const buttonId =
+        msg.message?.buttonsResponseMessage?.selectedButtonId ||
+        msg.message?.templateButtonReplyMessage?.selectedId ||
+        msg.message?.listResponseMessage?.singleSelectReply?.selectedRowId;
+
+    if (!buttonId) return false;
+
+    // Try every registered command that has a handleButton method.
+    // We dedupe by module reference so we don't call it twice.
+    const seen = new Set();
+    for (const [, mod] of commandCache) {
+        if (seen.has(mod)) continue;
+        seen.add(mod);
+        if (typeof mod.handleButton === 'function') {
+            try {
+                const handled = await mod.handleButton(conn, msg, buttonId, ctx);
+                if (handled === true || handled === undefined) return true;
+            } catch (e) {
+                console.error("handleButton error:", e);
+            }
+        }
+    }
+    return false;
+}
 
 // ---------------- HANDLER ----------------
 module.exports = async (conn, m, userId = "default") => {
@@ -71,6 +105,33 @@ module.exports = async (conn, m, userId = "default") => {
 
         // SKIP CHANNEL MESSAGES
         if (from === config.newsletterJid) return;
+
+        // ---------------- CONTEXT OBJECT FOR COMMANDS ----------------
+        const cmdCtx = {
+            from,
+            sender,
+            fancy,
+            isOwner,
+            pushname,
+            config,
+            conn,
+            msg,
+            userId,
+            isGroup,
+            body,
+            args,
+            command,
+            prefix
+        };
+
+        // ---------------- BUTTON / LIST REPLY ROUTING ----------------
+        // Any interactive message (buttons, template replies, list rows) is
+        // dispatched to command modules that implement handleButton().
+        // Must happen before command parsing so button IDs aren't mistaken
+        // for text commands.
+        if (await routeButtonInteraction(conn, msg, cmdCtx)) {
+            return;
+        }
 
         // ---------------- ANTIDELETE: SAVE MESSAGES ----------------
         if (config.antidelete && msg.key?.id && !msg.key.fromMe) {
@@ -227,7 +288,10 @@ module.exports = async (conn, m, userId = "default") => {
             const bugPatterns = ['\u200e', '\u200f', '\u202e', '\u202a', '\u202b', '\u202c', '\u202d', /[\u2066-\u2069]/g, /[\u2000-\u200F]/g, /[\u2028-\u202F]/g];
             const hasBug = bugPatterns.some(pattern => {
                 if (typeof pattern === 'string') return body.includes(pattern);
-                if (pattern instanceof RegExp) return pattern.test(body);
+                if (pattern instanceof RegExp) {
+                    pattern.lastIndex = 0; // reset /g state
+                    return pattern.test(body);
+                }
                 return false;
             });
 
@@ -387,17 +451,7 @@ module.exports = async (conn, m, userId = "default") => {
 
                 try {
                     await Promise.race([
-                        handler.execute(conn, msg, args, {
-                            from,
-                            sender,
-                            fancy,
-                            isOwner,
-                            pushname,
-                            config,
-                            conn,
-                            msg,
-                            userId
-                        }),
+                        handler.execute(conn, msg, args, cmdCtx),
                         timeoutPromise
                     ]);
                 } catch (cmdErr) {
