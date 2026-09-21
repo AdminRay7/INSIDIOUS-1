@@ -42,8 +42,19 @@ mongoose.connect(config.mongodb, {
 // ---------------- GLOBAL STATE ----------------
 global.conn = null;
 global.socketReady = false;
+global.socketReadyPromise = null;
+global.resolveSocketReady = null;
 global.mongoClient = null;
 let hasWelcomed = false;
+
+// ---------------- HELPERS ----------------
+function toJid(input) {
+    if (!input || typeof input !== "string") return null;
+    if (input.includes("@")) return input;
+    const digits = input.replace(/\D/g, "");
+    if (digits.length < 10 || digits.length > 15) return null;
+    return digits + "@s.whatsapp.net";
+}
 
 // ---------------- API AUTH ----------------
 const API_KEY = process.env.API_KEY || config.apiKey || "changeme-please-rotate-this-key";
@@ -58,11 +69,9 @@ function requireApiKey(req, res, next) {
 
 // ---------------- ROUTES ----------------
 
-// Pairing UI (serves public/index.html automatically by express.static)
-// Fallback to index.html for unknown routes
+// Pairing UI
 app.get("/", (req, res) => {
-    const pairingPath = path.join(__dirname, "public", "index.html");
-    res.sendFile(pairingPath);
+    res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
 // Mobile app
@@ -92,7 +101,9 @@ app.get("/api/me/sessions", requireApiKey, (req, res) => {
     if (global.conn) {
         sessions.push({
             id: config.sessionName || "default",
-            status: global.conn.user ? "connected" : (global.socketReady ? "connecting" : "closed"),
+            status: global.conn.user
+                ? "connected"
+                : (global.socketReady ? "connecting" : "closed"),
             startedAt: global._sessionStartedAt || Date.now()
         });
     }
@@ -101,21 +112,25 @@ app.get("/api/me/sessions", requireApiKey, (req, res) => {
 
 // ---------- API: Send text ----------
 app.post("/api/send", requireApiKey, async (req, res) => {
-    const { userId, to, text } = req.body;
+    const { to, text } = req.body;
 
     if (!to || !text) {
         return res.status(400).json({ error: "to and text required" });
     }
     if (!global.conn?.user) {
-        return res.status(400).json({ error: "Bot is not connected" });
+        return res.status(503).json({ error: "Bot is not connected" });
     }
 
-    const jid = to.includes("@") ? to : to.replace(/[^0-9]/g, "") + "@s.whatsapp.net";
+    const jid = toJid(to);
+    if (!jid) {
+        return res.status(400).json({ error: "Invalid recipient number" });
+    }
 
     try {
         const sent = await global.conn.sendMessage(jid, { text });
         res.json({ success: true, messageId: sent.key.id, to: jid });
     } catch (e) {
+        console.error("Send error:", e);
         res.status(500).json({ error: e.message });
     }
 });
@@ -128,10 +143,17 @@ app.post("/api/send-media", requireApiKey, async (req, res) => {
         return res.status(400).json({ error: "to and url required" });
     }
     if (!global.conn?.user) {
-        return res.status(400).json({ error: "Bot is not connected" });
+        return res.status(503).json({ error: "Bot is not connected" });
+    }
+    if (!/^https?:\/\//i.test(url)) {
+        return res.status(400).json({ error: "url must start with http:// or https://" });
     }
 
-    const jid = to.includes("@") ? to : to.replace(/[^0-9]/g, "") + "@s.whatsapp.net";
+    const jid = toJid(to);
+    if (!jid) {
+        return res.status(400).json({ error: "Invalid recipient number" });
+    }
+
     const content = type === "video"
         ? { video: { url }, caption }
         : { image: { url }, caption };
@@ -140,6 +162,7 @@ app.post("/api/send-media", requireApiKey, async (req, res) => {
         const sent = await global.conn.sendMessage(jid, content);
         res.json({ success: true, messageId: sent.key.id });
     } catch (e) {
+        console.error("Send media error:", e);
         res.status(500).json({ error: e.message });
     }
 });
@@ -148,10 +171,12 @@ app.post("/api/send-media", requireApiKey, async (req, res) => {
 app.post("/api/check-number", requireApiKey, async (req, res) => {
     const { number } = req.body;
     if (!number) return res.status(400).json({ error: "number required" });
-    if (!global.conn?.user) return res.status(400).json({ error: "Bot not connected" });
+    if (!global.conn?.user) return res.status(503).json({ error: "Bot not connected" });
+
+    const jid = toJid(number);
+    if (!jid) return res.status(400).json({ error: "Invalid number" });
 
     try {
-        const jid = number.replace(/[^0-9]/g, "") + "@s.whatsapp.net";
         const result = await global.conn.onWhatsApp(jid);
         res.json({ exists: result?.length > 0, jid });
     } catch (e) {
@@ -162,7 +187,7 @@ app.post("/api/check-number", requireApiKey, async (req, res) => {
 // ---------- API: Status ----------
 app.get("/api/status", (req, res) => {
     res.json({
-        connected: global.conn?.user ? true : false,
+        connected: !!global.conn?.user,
         ready: global.socketReady,
         uptime: process.uptime()
     });
@@ -172,57 +197,72 @@ app.get("/api/status", (req, res) => {
 app.get("/api/stats", async (req, res) => {
     try {
         let userCount = 0;
-        if (mongoose.connection.readyState === 1) userCount = await User.countDocuments();
+        if (mongoose.connection.readyState === 1) {
+            userCount = await User.countDocuments();
+        }
         res.json({
             users: userCount,
             uptime: process.uptime(),
-            connected: global.conn?.user ? true : false
+            connected: !!global.conn?.user
         });
     } catch (error) {
-        res.json({ error: error.message });
+        res.status(500).json({ error: error.message });
     }
 });
 
 // ---------- API: Pairing ----------
 app.get("/api/pair", async (req, res) => {
-    const num = req.query.num;
-    if (!num) return res.json({ error: "Provide ?num=..." });
+    const num = String(req.query.num || "").replace(/\D/g, "");
 
-    const clean = num.replace(/[^0-9]/g, "");
-    if (clean.length < 10 || clean.length > 15) {
-        return res.json({ error: "Invalid phone number" });
+    if (!num) {
+        return res.status(400).json({ error: "Provide ?num=..." });
     }
-
+    if (num.length < 10 || num.length > 15) {
+        return res.status(400).json({ error: "Invalid phone number (10–15 digits expected)." });
+    }
     if (!global.conn) {
-        return res.json({ error: "Bot still starting up. Wait 10 seconds." });
+        return res.status(503).json({ error: "Bot is still starting up. Please retry in 15 seconds." });
     }
     if (global.conn.user) {
-        return res.json({ error: "Bot is already paired." });
+        return res.status(409).json({ error: "Bot is already paired." });
     }
 
     try {
+        // Non-blocking wait for socket readiness (max 10s)
         if (!global.socketReady) {
-            const start = Date.now();
-            while (!global.socketReady && Date.now() - start < 8000) {
+            const deadline = Date.now() + 10000;
+            while (!global.socketReady && Date.now() < deadline) {
                 await new Promise(r => setTimeout(r, 500));
             }
         }
-        if (!global.socketReady) throw new Error("Socket not ready");
+        if (!global.socketReady) {
+            return res.status(503).json({ error: "Socket not ready. Retry in a few seconds." });
+        }
 
-        const code = await global.conn.requestPairingCode(clean);
+        // requestPairingCode sometimes rejects right after "connecting".
+        // One retry usually fixes it.
+        let code;
+        try {
+            code = await global.conn.requestPairingCode(num);
+        } catch (firstErr) {
+            console.warn("Pairing first attempt failed:", firstErr.message);
+            await new Promise(r => setTimeout(r, 2000));
+            code = await global.conn.requestPairingCode(num);
+        }
+
         const formatted = code.match(/.{1,4}/g)?.join("-") || code;
-
         console.log(fancy(`✅ Pairing code: ${formatted}`));
         res.json({ success: true, code: formatted });
     } catch (e) {
-        res.json({ error: e.message });
+        console.error("Pair error:", e);
+        res.status(500).json({ error: e.message || "Pairing failed" });
     }
 });
 
 // ---------- API: Reset Session ----------
 app.get("/api/reset", async (req, res) => {
     try {
-        if (!global.mongoClient) return res.json({ error: "DB not ready" });
+        if (!global.mongoClient) return res.status(503).json({ error: "DB not ready" });
 
         if (global.conn) {
             try {
@@ -242,7 +282,7 @@ app.get("/api/reset", async (req, res) => {
         setTimeout(() => startInsidious().catch(e => console.error(e)), 1500);
         res.json({ success: true, message: "Session reset. Reconnecting..." });
     } catch (e) {
-        res.json({ error: e.message });
+        res.status(500).json({ error: e.message });
     }
 });
 
@@ -302,9 +342,11 @@ async function startInsidious() {
             if (!hasWelcomed) {
                 hasWelcomed = true;
                 try {
-                    const ownerJid = config.ownerNumber + "@s.whatsapp.net";
-                    const welcomeMsg = `╭─── • 🥀 • ───╮\n   ɪɴꜱɪᴅɪᴏᴜꜱ ᴠ${config.version}\n╰─── • 🥀 • ───╯\n\n✅ Bot is online!\n\n${fancy(config.footer)}`;
-                    await conn.sendMessage(ownerJid, { text: welcomeMsg });
+                    const ownerJid = toJid(String(config.ownerNumber));
+                    if (ownerJid) {
+                        const welcomeMsg = `╭─── • 🥀 • ───╮\n   ɪɴꜱɪᴅɪᴏᴜꜱ ᴠ${config.version}\n╰─── • 🥀 • ───╯\n\n✅ Bot is online!\n\n${fancy(config.footer)}`;
+                        await conn.sendMessage(ownerJid, { text: welcomeMsg });
+                    }
                 } catch (e) {
                     console.error("Welcome error:", e.message);
                 }
@@ -323,11 +365,6 @@ async function startInsidious() {
 
             if (code === 440) {
                 console.log(fancy("🚨 440 CONFLICT — another instance running."));
-                return;
-            }
-
-            if (code === 405 || code === 515) {
-                setTimeout(() => startInsidious().catch(e => console.error(e)), 5000);
                 return;
             }
 
@@ -369,6 +406,30 @@ async function startInsidious() {
 
     return conn;
 }
+
+// ---------------- GRACEFUL SHUTDOWN ----------------
+async function shutdown(signal) {
+    console.log(fancy(`\n🛑 ${signal} received — shutting down...`));
+    try {
+        if (global.conn) {
+            global.conn.ev.removeAllListeners();
+            global.conn.ws?.close();
+        }
+        if (global.mongoClient) {
+            await global.mongoClient.close();
+        }
+        await mongoose.connection.close();
+    } catch (e) {
+        console.error("Shutdown error:", e);
+    }
+    process.exit(0);
+}
+
+process.on("SIGINT", () => shutdown("SIGINT"));
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("unhandledRejection", (reason) => {
+    console.error("Unhandled rejection:", reason);
+});
 
 // ---------------- BOOT ----------------
 console.log(fancy("🚀 Starting INSIDIOUS Bot..."));
