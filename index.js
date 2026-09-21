@@ -3,7 +3,8 @@ const {
     DisconnectReason,
     Browsers,
     makeCacheableSignalKeyStore,
-    fetchLatestBaileysVersion
+    fetchLatestBaileysVersion,
+    useMultiFileAuthState
 } = require("@whiskeysockets/baileys");
 const { MongoClient } = require("mongodb");
 const { useMongoDBAuthState } = require("./lib/mongoAuthState");
@@ -23,10 +24,7 @@ const { User } = require("./database/models");
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
 
-// Serve static files from public/
 app.use(express.static(path.join(__dirname, "public")));
-
-// Serve Assets for icons
 app.use("/Assets", express.static(path.join(__dirname, "Assets")));
 
 // ---------------- DATABASE ----------------
@@ -42,9 +40,9 @@ mongoose.connect(config.mongodb, {
 // ---------------- GLOBAL STATE ----------------
 global.conn = null;
 global.socketReady = false;
-global.socketReadyPromise = null;
-global.resolveSocketReady = null;
 global.mongoClient = null;
+global.pairingCode = null;
+global.pairingNumber = null;
 let hasWelcomed = false;
 
 // ---------------- HELPERS ----------------
@@ -69,12 +67,10 @@ function requireApiKey(req, res, next) {
 
 // ---------------- ROUTES ----------------
 
-// Pairing UI
 app.get("/", (req, res) => {
     res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
-// Mobile app
 app.get("/mobile", (req, res) => {
     res.sendFile(path.join(__dirname, "public", "app.html"));
 });
@@ -113,18 +109,11 @@ app.get("/api/me/sessions", requireApiKey, (req, res) => {
 // ---------- API: Send text ----------
 app.post("/api/send", requireApiKey, async (req, res) => {
     const { to, text } = req.body;
-
-    if (!to || !text) {
-        return res.status(400).json({ error: "to and text required" });
-    }
-    if (!global.conn?.user) {
-        return res.status(503).json({ error: "Bot is not connected" });
-    }
+    if (!to || !text) return res.status(400).json({ error: "to and text required" });
+    if (!global.conn?.user) return res.status(503).json({ error: "Bot is not connected" });
 
     const jid = toJid(to);
-    if (!jid) {
-        return res.status(400).json({ error: "Invalid recipient number" });
-    }
+    if (!jid) return res.status(400).json({ error: "Invalid recipient number" });
 
     try {
         const sent = await global.conn.sendMessage(jid, { text });
@@ -138,21 +127,12 @@ app.post("/api/send", requireApiKey, async (req, res) => {
 // ---------- API: Send media ----------
 app.post("/api/send-media", requireApiKey, async (req, res) => {
     const { to, url, caption, type = "image" } = req.body;
-
-    if (!to || !url) {
-        return res.status(400).json({ error: "to and url required" });
-    }
-    if (!global.conn?.user) {
-        return res.status(503).json({ error: "Bot is not connected" });
-    }
-    if (!/^https?:\/\//i.test(url)) {
-        return res.status(400).json({ error: "url must start with http:// or https://" });
-    }
+    if (!to || !url) return res.status(400).json({ error: "to and url required" });
+    if (!global.conn?.user) return res.status(503).json({ error: "Bot is not connected" });
+    if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: "url must start with http:// or https://" });
 
     const jid = toJid(to);
-    if (!jid) {
-        return res.status(400).json({ error: "Invalid recipient number" });
-    }
+    if (!jid) return res.status(400).json({ error: "Invalid recipient number" });
 
     const content = type === "video"
         ? { video: { url }, caption }
@@ -189,6 +169,7 @@ app.get("/api/status", (req, res) => {
     res.json({
         connected: !!global.conn?.user,
         ready: global.socketReady,
+        pairing: global.pairingCode,
         uptime: process.uptime()
     });
 });
@@ -210,47 +191,44 @@ app.get("/api/stats", async (req, res) => {
     }
 });
 
-// ---------- API: Pairing ----------
+// ---------- API: Pairing (PROPER FLOW) ----------
 app.get("/api/pair", async (req, res) => {
     const num = String(req.query.num || "").replace(/\D/g, "");
 
-    if (!num) {
-        return res.status(400).json({ error: "Provide ?num=..." });
-    }
-    if (num.length < 10 || num.length > 15) {
-        return res.status(400).json({ error: "Invalid phone number (10–15 digits expected)." });
-    }
-    if (!global.conn) {
-        return res.status(503).json({ error: "Bot is still starting up. Please retry in 15 seconds." });
-    }
-    if (global.conn.user) {
-        return res.status(409).json({ error: "Bot is already paired." });
+    if (!num) return res.status(400).json({ error: "Provide ?num=..." });
+    if (num.length < 10 || num.length > 15) return res.status(400).json({ error: "Invalid phone number (10–15 digits expected)." });
+    if (!global.conn) return res.status(503).json({ error: "Bot is still starting up. Please retry in 15 seconds." });
+    if (global.conn.user) return res.status(409).json({ error: "Bot is already paired." });
+
+    // If a pairing code was already requested for this number, return it
+    if (global.pairingCode && global.pairingNumber === num) {
+        return res.json({ success: true, code: global.pairingCode });
     }
 
     try {
-        // Non-blocking wait for socket readiness (max 10s)
-        if (!global.socketReady) {
-            const deadline = Date.now() + 10000;
-            while (!global.socketReady && Date.now() < deadline) {
-                await new Promise(r => setTimeout(r, 500));
-            }
+        // CRITICAL: Wait for the socket to reach "connecting" state.
+        // Calling requestPairingCode too early produces a dead code.
+        const deadline = Date.now() + 30000; // 30 second timeout
+        while (!global.socketReady && Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, 500));
         }
+
         if (!global.socketReady) {
             return res.status(503).json({ error: "Socket not ready. Retry in a few seconds." });
         }
 
-        // requestPairingCode sometimes rejects right after "connecting".
-        // One retry usually fixes it.
-        let code;
-        try {
-            code = await global.conn.requestPairingCode(num);
-        } catch (firstErr) {
-            console.warn("Pairing first attempt failed:", firstErr.message);
-            await new Promise(r => setTimeout(r, 2000));
-            code = await global.conn.requestPairingCode(num);
+        // Check if already registered
+        if (global.conn.authState.creds.registered) {
+            return res.status(409).json({ error: "This device is already registered." });
         }
 
+        // Request the pairing code — this MUST be called after "connecting"
+        const code = await global.conn.requestPairingCode(num);
         const formatted = code.match(/.{1,4}/g)?.join("-") || code;
+
+        global.pairingCode = formatted;
+        global.pairingNumber = num;
+
         console.log(fancy(`✅ Pairing code: ${formatted}`));
         res.json({ success: true, code: formatted });
     } catch (e) {
@@ -277,6 +255,8 @@ app.get("/api/reset", async (req, res) => {
         console.log(fancy("🗑️ authState cleared."));
 
         global.socketReady = false;
+        global.pairingCode = null;
+        global.pairingNumber = null;
         hasWelcomed = false;
 
         setTimeout(() => startInsidious().catch(e => console.error(e)), 1500);
@@ -297,6 +277,8 @@ async function startInsidious() {
     }
 
     global.socketReady = false;
+    global.pairingCode = null;
+    global.pairingNumber = null;
 
     if (!global.mongoClient) {
         global.mongoClient = new MongoClient(config.mongodb);
@@ -315,6 +297,7 @@ async function startInsidious() {
             keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" }))
         },
         logger: pino({ level: "silent" }),
+        // Use canonical browser label — custom labels break pairing
         browser: Browsers.macOS("Safari"),
         syncFullHistory: false,
         generateHighQualityLinkPreview: true,
@@ -328,16 +311,28 @@ async function startInsidious() {
     conn.ev.on("creds.update", saveCreds);
 
     conn.ev.on("connection.update", async (update) => {
-        const { connection, lastDisconnect } = update;
+        const { connection, lastDisconnect, qr } = update;
 
+        // CRITICAL: Only mark socket as ready when it's "connecting"
+        // This is when requestPairingCode can be safely called.
         if (connection === "connecting") {
             global.socketReady = true;
             console.log(fancy("🔌 Socket ready — pairing available."));
         }
 
+        // The QR event also fires in pairing code mode — this is the trigger
+        // for requesting a code. But we expose an API endpoint instead.
+        if (qr && !conn.authState.creds.registered) {
+            console.log(fancy("📱 QR available (use /api/pair for code)"));
+        }
+
         if (connection === "open") {
             global.socketReady = true;
             console.log(fancy("✅ INSIDIOUS is alive and connected!"));
+
+            // Clear pairing state on success
+            global.pairingCode = null;
+            global.pairingNumber = null;
 
             if (!hasWelcomed) {
                 hasWelcomed = true;
@@ -355,6 +350,8 @@ async function startInsidious() {
 
         if (connection === "close") {
             global.socketReady = false;
+            global.pairingCode = null;
+            global.pairingNumber = null;
             const code = lastDisconnect?.error?.output?.statusCode;
             console.log(fancy(`❌ Connection closed (${code})`));
 
