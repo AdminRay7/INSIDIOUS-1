@@ -1,11 +1,11 @@
 {
   "name": "insidious-bot",
   "version": "2.1.1",
-  "description": "INSIDIOUS WhatsApp Bot — multi-session, Session ID deployable",
+  "description": "INSIDIOUS WhatsApp Bot — multi-session deployable",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node index.js"
+    "start": "node --max-old-space-size=400 --expose-gc index.js",
+    "dev": "node --max-old-space-size=400 --expose-gc index.js"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.9",
@@ -21,7 +21,5 @@
     "pino": "^8.0.0",
     "sharp": "^0.33.0"
   },
-  "engines": {
-    "node": ">=18.0.0"
-  }
+  "engines": { "node": ">=18.0.0" }
 }
