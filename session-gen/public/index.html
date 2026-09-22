@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>INSIDIOUS | Session Generator</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+<style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{
+        background:radial-gradient(circle at 30% 20%,#1a0000 0%,#0a0000 40%,#000 100%);
+        color:#eaeaea;
+        font-family:'Segoe UI',system-ui,sans-serif;
+        min-height:100vh;
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        padding:24px;
+    }
+    .card{
+        position:relative;
+        background:rgba(12,0,0,.85);
+        backdrop-filter:blur(20px);
+        border:1px solid rgba(255,0,0,.35);
+        box-shadow:0 0 40px rgba(255,0,0,.25),inset 0 0 60px rgba(255,0,0,.05);
+        border-radius:22px;
+        padding:40px 32px;
+        max-width:520px;
+        width:100%;
+    }
+    .brand{text-align:center;margin-bottom:28px}
+    .brand .ghost{font-size:44px;color:#ff2a2a;text-shadow:0 0 24px #ff2a2a}
+    .brand h1{font-size:24px;letter-spacing:6px;margin-top:10px;color:#fff;text-shadow:0 0 20px rgba(255,42,42,.6)}
+    .brand p{color:#888;font-size:11px;letter-spacing:2px;margin-top:6px;text-transform:uppercase}
+
+    .step{margin-top:18px}
+    .hidden{display:none!important}
+
+    input{
+        width:100%;
+        padding:16px;
+        background:#0a0000;
+        border:1px solid rgba(255,42,42,.4);
+        border-radius:12px;
+        color:#fff;
+        font-size:16px;
+        text-align:center;
+        letter-spacing:2px;
+        outline:none;
+        transition:.2s;
+    }
+    input:focus{border-color:#ff2a2a;box-shadow:0 0 20px rgba(255,42,42,.4)}
+
+    .btn{
+        width:100%;
+        padding:16px;
+        margin-top:12px;
+        border:none;
+        border-radius:12px;
+        background:#ff2a2a;
+        color:#000;
+        font-weight:800;
+        letter-spacing:2px;
+        text-transform:uppercase;
+        font-size:13px;
+        cursor:pointer;
+        transition:.25s;
+    }
+    .btn:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 8px 24px rgba(255,42,42,.45)}
+    .btn:disabled{opacity:.5;cursor:not-allowed}
+    .btn.ghost{background:transparent;border:1px solid rgba(255,42,42,.5);color:#ff7676}
+    .btn.ghost:hover{background:rgba(255,42,42,.1)}
+
+    .code{
+        font-size:36px;
+        font-weight:800;
+        letter-spacing:10px;
+        text-align:center;
+        color:#fff;
+        background:#000;
+        padding:24px 12px;
+        border-radius:14px;
+        border:1px dashed rgba(255,42,42,.6);
+        margin:18px 0;
+        text-shadow:0 0 20px rgba(255,42,42,.8);
+        word-break:break-all;
+    }
+
+    .instructions{
+        background:rgba(255,42,42,.06);
+        border-left:3px solid #ff2a2a;
+        padding:14px 16px;
+        border-radius:8px;
+        font-size:13px;
+        color:#ccc;
+        line-height:1.7;
+    }
+    .instructions b{color:#ff7676}
+
+    .session-box{
+        background:#000;
+        border:1px solid rgba(0,255,100,.4);
+        padding:16px;
+        border-radius:10px;
+        font-family:'Courier New',monospace;
+        font-size:11px;
+        color:#7fff9f;
+        word-break:break-all;
+        max-height:180px;
+        overflow:auto;
+        margin:14px 0;
+        line-height:1.5;
+    }
+
+    .status{
+        text-align:center;
+        color:#888;
+        font-size:12px;
+        letter-spacing:1px;
+        margin-top:12px;
+    }
+    .status.ready{color:#7fff9f}
+    .status.error{color:#ff7676}
+    .status .spinner{
+        display:inline-block;
+        width:12px;height:12px;
+        border:2px solid #888;
+        border-top-color:#ff2a2a;
+        border-radius:50%;
+        animation:spin 0.8s linear infinite;
+        margin-right:8px;
+        vertical-align:middle;
+    }
+    @keyframes spin{to{transform:rotate(360deg)}}
+
+    .warning{
+        color:#ff7676;
+        font-size:11px;
+        text-align:center;
+        margin-top:12px;
+        letter-spacing:.5px;
+    }
+
+    .footer{text-align:center;color:#555;font-size:10px;letter-spacing:3px;margin-top:26px}
+</style>
+</head>
+<body>
+<div class="card">
+    <div class="brand">
+        <div class="ghost"><i class="fas fa-ghost"></i></div>
+        <h1>INSIDIOUS</h1>
+        <p>Session ID Generator</p>
+    </div>
+
+    <!-- STEP 1 -->
+    <div class="step" id="step1">
+        <input type="tel" id="phone" placeholder="254712345678" inputmode="numeric" autocomplete="off">
+        <button class="btn" id="genBtn">
+            <i class="fas fa-key"></i> Generate Pairing Code
+        </button>
+    </div>
+
+    <!-- STEP 2 -->
+    <div class="step hidden" id="step2">
+        <div class="instructions">
+            <b>HOW TO PAIR:</b><br>
+            1. Open WhatsApp → <b>Linked Devices</b><br>
+            2. Tap <b>Link with Phone Number</b><br>
+            3. Enter the 8-digit code below
+        </div>
+        <div class="code" id="pairCode">----</div>
+        <div class="status" id="status2">
+            <span class="spinner"></span> Waiting for you to link...
+        </div>
+    </div>
+
+    <!-- STEP 3 -->
+    <div class="step hidden" id="step3">
+        <div class="instructions" style="border-color:#7fff9f;background:rgba(0,255,100,.06)">
+            <b style="color:#7fff9f">✅ SESSION ID READY</b><br>
+            Copy this string and paste it into your bot's <b>.env</b> as <b>SESSION_ID</b>
+        </div>
+        <div class="session-box" id="sessionOut"></div>
+        <button class="btn" id="copyBtn"><i class="fas fa-copy"></i> Copy Session ID</button>
+        <div class="warning">
+            ⚠️ Keep this private. Anyone with it can access this WhatsApp account.
+        </div>
+    </div>
+
+    <div class="footer">DEVELOPED BY STANYTZ © 2025</div>
+</div>
+
+<script>
+    const genBtn     = document.getElementById('genBtn');
+    const phone      = document.getElementById('phone');
+    const step1      = document.getElementById('step1');
+    const step2      = document.getElementById('step2');
+    const step3      = document.getElementById('step3');
+    const pairCode   = document.getElementById('pairCode');
+    const status2    = document.getElementById('status2');
+    const sessionOut = document.getElementById('sessionOut');
+    const copyBtn    = document.getElementById('copyBtn');
+
+    let pollTimer = null;
+
+    genBtn.onclick = async () => {
+        const num = phone.value.replace(/\D/g,'');
+        if (num.length < 10 || num.length > 15){
+            alert('Enter full number with country code (10–15 digits)');
+            return;
+        }
+        genBtn.disabled = true;
+        genBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Starting...';
+
+        try{
+            const r = await fetch('/api/generate',{
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({number: num})
+            });
+            const data = await r.json();
+            if (!r.ok) throw new Error(data.error || 'Failed');
+
+            step1.classList.add('hidden');
+            step2.classList.remove('hidden');
+            startPolling(data.sessionId);
+        }catch(e){
+            alert('Error: '+e.message);
+            genBtn.disabled = false;
+            genBtn.innerHTML = '<i class="fas fa-key"></i> Generate Pairing Code';
+        }
+    };
+
+    function startPolling(id){
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = setInterval(async () => {
+            try{
+                const r = await fetch(`/api/status/${id}`,{cache:'no-store'});
+                const s = await r.json();
+
+                if (s.pairingCode) pairCode.innerText = s.pairingCode;
+
+                if (s.status === 'ready' && s.sessionId){
+                    clearInterval(pollTimer);
+                    step2.classList.add('hidden');
+                    step3.classList.remove('hidden');
+                    sessionOut.innerText = s.sessionId;
+                    return;
+                }
+
+                if (s.status === 'error'){
+                    clearInterval(pollTimer);
+                    status2.className = 'status error';
+                    status2.innerHTML = '❌ ' + (s.error || 'Error');
+                }
+            }catch{}
+        }, 2000);
+    }
+
+    copyBtn.onclick = () => {
+        navigator.clipboard.writeText(sessionOut.innerText);
+        copyBtn.innerHTML = '<i class="fas fa-check"></i> Copied!';
+        setTimeout(() => copyBtn.innerHTML = '<i class="fas fa-copy"></i> Copy Session ID', 2000);
+    };
+</script>
+</body>
+</html>
