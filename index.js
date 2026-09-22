@@ -1,9 +1,13 @@
+// ---------------- ENV ----------------
+require("dotenv").config();
+
 const {
     default: makeWASocket,
     DisconnectReason,
     Browsers,
     makeCacheableSignalKeyStore,
-    fetchLatestBaileysVersion
+    fetchLatestBaileysVersion,
+    BufferJSON
 } = require("@whiskeysockets/baileys");
 const { MongoClient } = require("mongodb");
 const { useMongoDBAuthState } = require("./lib/mongoAuthState");
@@ -15,32 +19,54 @@ const config = require("./config");
 const { fancy } = require("./lib/font");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || config.port || 3000;
 
 const { User } = require("./database/models");
 
 // ---------------- MIDDLEWARE ----------------
 app.use(express.json({ limit: "5mb" }));
 app.use(express.urlencoded({ extended: true }));
-
-// Serve static files from public/
 app.use(express.static(path.join(__dirname, "public")));
-
-// Serve Assets for icons
 app.use("/Assets", express.static(path.join(__dirname, "Assets")));
 
+// ---------------- SESSION_ID PARSE ----------------
+const SESSION_PREFIX = '_INSIDIOUS_"';
+const SESSION_ID = process.env.SESSION_ID || config.sessionId;
+
+let credsFromSession = null;
+if (SESSION_ID) {
+    try {
+        if (!SESSION_ID.startsWith(SESSION_PREFIX)) {
+            console.error(fancy(`❌ SESSION_ID must start with: ${SESSION_PREFIX}`));
+            process.exit(1);
+        }
+        const raw = SESSION_ID.slice(SESSION_PREFIX.length);
+        credsFromSession = JSON.parse(
+            Buffer.from(raw, "base64").toString("utf-8"),
+            BufferJSON.reviver
+        );
+        console.log(fancy("✅ SESSION_ID parsed successfully"));
+    } catch (e) {
+        console.error(fancy("❌ Invalid SESSION_ID: " + e.message));
+        process.exit(1);
+    }
+}
+
 // ---------------- DATABASE ----------------
-console.log(fancy("🔄 Connecting to MongoDB (mongoose)..."));
-mongoose.connect(config.mongodb, {
-    dbName: "insidious",
-    serverSelectionTimeoutMS: 30000,
-    connectTimeoutMS: 30000
-})
-    .then(() => console.log(fancy("✅ Database connected.")))
-    .catch(err => console.error("DB Error:", err));
+if (config.mongodb) {
+    console.log(fancy("🔄 Connecting to MongoDB (mongoose)..."));
+    mongoose.connect(config.mongodb, {
+        dbName: "insidious",
+        serverSelectionTimeoutMS: 30000,
+        connectTimeoutMS: 30000
+    })
+        .then(() => console.log(fancy("✅ Database connected.")))
+        .catch(err => console.error("DB Error:", err));
+} else {
+    console.log(fancy("⚠️  No MONGODB_URI set — running without database."));
+}
 
 // ---------------- GLOBAL STATE ----------------
-// Map of sessionId -> { conn, socketReady, pairing, pairingNumber, startedAt, welcomed }
 global.sessions = new Map();
 global.mongoClient = null;
 
@@ -65,7 +91,6 @@ function requireApiKey(req, res, next) {
 }
 
 // ---------------- ROUTES ----------------
-
 app.get("/", (req, res) => {
     res.sendFile(path.join(__dirname, "public", "index.html"));
 });
@@ -74,19 +99,15 @@ app.get("/mobile", (req, res) => {
     res.sendFile(path.join(__dirname, "public", "app.html"));
 });
 
-// ---------- API: Login ----------
+// ---------- Login ----------
 app.post("/api/login", (req, res) => {
     const { userId, apiKey } = req.body;
-    if (!userId || !apiKey) {
-        return res.status(400).json({ error: "userId and apiKey required" });
-    }
-    if (apiKey !== API_KEY) {
-        return res.status(401).json({ error: "Invalid API key" });
-    }
+    if (!userId || !apiKey) return res.status(400).json({ error: "userId and apiKey required" });
+    if (apiKey !== API_KEY) return res.status(401).json({ error: "Invalid API key" });
     res.json({ success: true, userId });
 });
 
-// ---------- API: Status (one session or all) ----------
+// ---------- Status ----------
 app.get("/api/status", (req, res) => {
     const sessionId = req.query.sessionId;
 
@@ -100,13 +121,17 @@ app.get("/api/status", (req, res) => {
                 startedAt: s.startedAt
             });
         }
-        return res.json({ sessions: all });
+        return res.json({
+            botName: config.botName,
+            connected: all.some(s => s.connected),
+            ready: all.some(s => s.ready),
+            uptime: process.uptime(),
+            sessions: all
+        });
     }
 
     const s = global.sessions.get(sessionId);
-    if (!s) {
-        return res.json({ connected: false, ready: false, exists: false });
-    }
+    if (!s) return res.json({ connected: false, ready: false, exists: false });
     res.json({
         connected: !!s.conn?.user,
         ready: s.socketReady,
@@ -116,7 +141,7 @@ app.get("/api/status", (req, res) => {
     });
 });
 
-// ---------- API: Sessions (list) ----------
+// ---------- List sessions ----------
 app.get("/api/me/sessions", requireApiKey, (req, res) => {
     const list = [];
     for (const [id, s] of global.sessions) {
@@ -129,23 +154,17 @@ app.get("/api/me/sessions", requireApiKey, (req, res) => {
     res.json({ sessions: list });
 });
 
-// ---------- API: Send text ----------
+// ---------- Send text ----------
 app.post("/api/send", requireApiKey, async (req, res) => {
     const { sessionId, to, text } = req.body;
+    if (!to || !text) return res.status(400).json({ error: "to and text required" });
 
-    if (!sessionId || !to || !text) {
-        return res.status(400).json({ error: "sessionId, to and text required" });
-    }
-
-    const session = global.sessions.get(sessionId);
-    if (!session?.conn?.user) {
-        return res.status(400).json({ error: "Session is not connected" });
-    }
+    const targetSession = sessionId || firstActiveSessionId();
+    const session = targetSession ? global.sessions.get(targetSession) : null;
+    if (!session?.conn?.user) return res.status(400).json({ error: "Session not connected" });
 
     const jid = toJid(to);
-    if (!jid) {
-        return res.status(400).json({ error: "Invalid recipient number" });
-    }
+    if (!jid) return res.status(400).json({ error: "Invalid recipient number" });
 
     try {
         const sent = await session.conn.sendMessage(jid, { text });
@@ -155,26 +174,18 @@ app.post("/api/send", requireApiKey, async (req, res) => {
     }
 });
 
-// ---------- API: Send media ----------
+// ---------- Send media ----------
 app.post("/api/send-media", requireApiKey, async (req, res) => {
     const { sessionId, to, url, caption, type = "image" } = req.body;
+    if (!to || !url) return res.status(400).json({ error: "to and url required" });
+    if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: "invalid url" });
 
-    if (!sessionId || !to || !url) {
-        return res.status(400).json({ error: "sessionId, to and url required" });
-    }
-    if (!/^https?:\/\//i.test(url)) {
-        return res.status(400).json({ error: "url must start with http:// or https://" });
-    }
-
-    const session = global.sessions.get(sessionId);
-    if (!session?.conn?.user) {
-        return res.status(400).json({ error: "Session is not connected" });
-    }
+    const targetSession = sessionId || firstActiveSessionId();
+    const session = targetSession ? global.sessions.get(targetSession) : null;
+    if (!session?.conn?.user) return res.status(400).json({ error: "Session not connected" });
 
     const jid = toJid(to);
-    if (!jid) {
-        return res.status(400).json({ error: "Invalid recipient number" });
-    }
+    if (!jid) return res.status(400).json({ error: "Invalid recipient number" });
 
     const content = type === "video"
         ? { video: { url }, caption }
@@ -188,22 +199,17 @@ app.post("/api/send-media", requireApiKey, async (req, res) => {
     }
 });
 
-// ---------- API: Check number ----------
+// ---------- Check number ----------
 app.post("/api/check-number", requireApiKey, async (req, res) => {
     const { sessionId, number } = req.body;
-    if (!sessionId || !number) {
-        return res.status(400).json({ error: "sessionId and number required" });
-    }
+    if (!number) return res.status(400).json({ error: "number required" });
 
-    const session = global.sessions.get(sessionId);
-    if (!session?.conn?.user) {
-        return res.status(400).json({ error: "Session not connected" });
-    }
+    const targetSession = sessionId || firstActiveSessionId();
+    const session = targetSession ? global.sessions.get(targetSession) : null;
+    if (!session?.conn?.user) return res.status(400).json({ error: "Session not connected" });
 
     const jid = toJid(number);
-    if (!jid) {
-        return res.status(400).json({ error: "Invalid number" });
-    }
+    if (!jid) return res.status(400).json({ error: "Invalid number" });
 
     try {
         const result = await session.conn.onWhatsApp(jid);
@@ -213,16 +219,14 @@ app.post("/api/check-number", requireApiKey, async (req, res) => {
     }
 });
 
-// ---------- API: Stats ----------
+// ---------- Stats ----------
 app.get("/api/stats", async (req, res) => {
     try {
         let userCount = 0;
         if (mongoose.connection.readyState === 1) userCount = await User.countDocuments();
 
         let activeSessions = 0;
-        for (const [, s] of global.sessions) {
-            if (s.conn?.user) activeSessions++;
-        }
+        for (const [, s] of global.sessions) if (s.conn?.user) activeSessions++;
 
         res.json({
             users: userCount,
@@ -235,16 +239,20 @@ app.get("/api/stats", async (req, res) => {
     }
 });
 
-// ---------- API: Pairing ----------
+// ---------- Pairing (multi-session mode only) ----------
 app.get("/api/pair", async (req, res) => {
+    if (SESSION_ID && !config.mongodb) {
+        return res.status(400).json({
+            error: "This bot uses SESSION_ID mode. Pairing is disabled."
+        });
+    }
+
     const sessionId = String(req.query.sessionId || "").trim();
-    const num = String(req.query.num || "").replace(/[^0-9]/g, "");
+    const num = String(req.query.num || "").replace(/\D/g, "");
 
     if (!sessionId) return res.status(400).json({ error: "Provide ?sessionId=..." });
     if (!num) return res.status(400).json({ error: "Provide ?num=..." });
-    if (num.length < 10 || num.length > 15) {
-        return res.status(400).json({ error: "Invalid phone number" });
-    }
+    if (num.length < 10 || num.length > 15) return res.status(400).json({ error: "Invalid phone number" });
 
     try {
         const code = await requestPairingCodeForSession(sessionId, num);
@@ -255,11 +263,10 @@ app.get("/api/pair", async (req, res) => {
     }
 });
 
-// ---------- API: Logout session ----------
+// ---------- Logout ----------
 app.get("/api/logout", requireApiKey, async (req, res) => {
     const sessionId = String(req.query.sessionId || "").trim();
     if (!sessionId) return res.status(400).json({ error: "Provide ?sessionId=..." });
-
     try {
         await logoutSession(sessionId);
         res.json({ success: true, message: `Session ${sessionId} logged out.` });
@@ -268,58 +275,53 @@ app.get("/api/logout", requireApiKey, async (req, res) => {
     }
 });
 
-// ---------------- SESSION MANAGEMENT ----------------
+// ---------------- HELPERS ----------------
+function firstActiveSessionId() {
+    for (const [id, s] of global.sessions) {
+        if (s.conn?.user) return id;
+    }
+    return null;
+}
 
+// ---------------- SESSION MANAGEMENT ----------------
 async function initMongo() {
+    if (!config.mongodb) return false;
     if (!global.mongoClient) {
         global.mongoClient = new MongoClient(config.mongodb);
         await global.mongoClient.connect();
         console.log(fancy("✅ MongoDB session store connected."));
     }
+    return true;
 }
 
 async function requestPairingCodeForSession(sessionId, phoneNumber) {
     await initMongo();
-
     let session = global.sessions.get(sessionId);
 
-    // If already connected, don't allow re-pairing
-    if (session?.conn?.user) {
-        throw new Error("Session is already paired");
-    }
+    if (session?.conn?.user) throw new Error("Session is already paired");
+    if (session?.pairing && session.pairingNumber === phoneNumber) return session.pairing;
 
-    // If pairing code already generated for this number, return it
-    if (session?.pairing && session.pairingNumber === phoneNumber) {
-        return session.pairing;
-    }
-
-    // Start a fresh socket if none exists
     if (!session) {
         session = {
-            conn: null,
-            socketReady: false,
-            pairing: null,
-            pairingNumber: null,
-            startedAt: Date.now(),
-            welcomed: false
+            conn: null, socketReady: false,
+            pairing: null, pairingNumber: null,
+            startedAt: Date.now(), welcomed: false
         };
         global.sessions.set(sessionId, session);
         await bootSocket(sessionId, session);
     }
 
-    // Wait for socket to be ready
     const deadline = Date.now() + 30000;
     while (!session.socketReady && Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 500));
     }
     if (!session.socketReady) throw new Error("Socket not ready. Retry in a few seconds.");
 
-    // Request the code (retry once if it fails on first try)
     let code;
     try {
         code = await session.conn.requestPairingCode(phoneNumber);
     } catch (e) {
-        console.warn("Pairing first attempt failed, retrying:", e.message);
+        console.warn("Pairing retry:", e.message);
         await new Promise(r => setTimeout(r, 2000));
         code = await session.conn.requestPairingCode(phoneNumber);
     }
@@ -331,19 +333,33 @@ async function requestPairingCodeForSession(sessionId, phoneNumber) {
     return formatted;
 }
 
-async function bootSocket(sessionId, session) {
-    await initMongo();
-
-    const collection = global.mongoClient.db("insidious").collection("authState");
-    const { state, saveCreds } = await useMongoDBAuthState(collection, sessionId);
+async function bootSocket(sessionId, session, useSessionCreds = false) {
     const { version } = await fetchLatestBaileysVersion();
+    let auth;
+
+    if (useSessionCreds && credsFromSession) {
+        // ---- SESSION_ID mode ----
+        auth = {
+            creds: credsFromSession,
+            keys: makeCacheableSignalKeyStore({}, pino({ level: "silent" }))
+        };
+    } else {
+        // ---- MongoDB multi-session mode ----
+        const ok = await initMongo();
+        if (!ok) throw new Error("No MongoDB — cannot use multi-session pairing");
+        const collection = global.mongoClient.db("insidious").collection("authState");
+        const { state, saveCreds } = await useMongoDBAuthState(collection, sessionId);
+        auth = {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" }))
+        };
+        session._saveCreds = saveCreds;
+        session._collection = collection;
+    }
 
     const conn = makeWASocket({
         version,
-        auth: {
-            creds: state.creds,
-            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "silent" }))
-        },
+        auth,
         logger: pino({ level: "silent" }),
         browser: Browsers.macOS("Safari"),
         syncFullHistory: false,
@@ -354,7 +370,8 @@ async function bootSocket(sessionId, session) {
     });
 
     session.conn = conn;
-    conn.ev.on("creds.update", saveCreds);
+
+    if (session._saveCreds) conn.ev.on("creds.update", session._saveCreds);
 
     conn.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect } = update;
@@ -368,26 +385,31 @@ async function bootSocket(sessionId, session) {
             session.socketReady = true;
             session.pairing = null;
             session.pairingNumber = null;
-            console.log(fancy(`✅ [${sessionId}] connected!`));
+            console.log(fancy(`✅ [${sessionId}] connected as ${conn.user?.id}`));
 
-            // Save meta so we can resume on restart
-            try {
-                await collection.updateOne(
-                    { _id: `${sessionId}:meta` },
-                    { $set: { value: { jid: conn.user?.id, linkedAt: Date.now() } } },
-                    { upsert: true }
-                );
-            } catch (e) {
-                console.error(`[${sessionId}] meta save failed:`, e.message);
+            if (session._collection) {
+                try {
+                    await session._collection.updateOne(
+                        { _id: `${sessionId}:meta` },
+                        { $set: { value: { jid: conn.user?.id, linkedAt: Date.now() } } },
+                        { upsert: true }
+                    );
+                } catch (e) {
+                    console.error(`[${sessionId}] meta save failed:`, e.message);
+                }
             }
 
-            // Welcome message to bot owner (once)
             if (!session.welcomed && config.ownerNumber) {
                 session.welcomed = true;
                 try {
                     const ownerJid = toJid(String(config.ownerNumber));
                     if (ownerJid) {
-                        const welcomeMsg = `╭─── • 🥀 • ───╮\n   ɪɴꜱɪᴅɪᴏᴜꜱ ᴠ${config.version}\n╰─── • 🥀 • ───╯\n\n✅ New session linked!\nSession: ${sessionId}\n\n${fancy(config.footer)}`;
+                        const welcomeMsg =
+                            `╭─── • 🥀 • ───╮\n` +
+                            `   ${config.botName || "INSIDIOUS"} ᴠ${config.version}\n` +
+                            `╰─── • 🥀 • ───╯\n\n` +
+                            `✅ Bot is online!\nSession: ${sessionId}\n\n` +
+                            `${fancy(config.footer || "")}`;
                         await conn.sendMessage(ownerJid, { text: welcomeMsg });
                     }
                 } catch (e) {
@@ -403,20 +425,19 @@ async function bootSocket(sessionId, session) {
 
             if (code === 401 || code === DisconnectReason.loggedOut) {
                 console.log(fancy(`🚪 [${sessionId}] logged out`));
-                await logoutSession(sessionId);
+                if (session._collection) await logoutSession(sessionId);
                 return;
             }
 
             if (code === 440) {
-                console.log(fancy(`🚨 [${sessionId}] 440 conflict`));
+                console.log(fancy(`🚨 [${sessionId}] 440 conflict — another instance running`));
                 return;
             }
 
-            // Reconnect for any other reason
             setTimeout(() => {
                 if (!global.sessions.has(sessionId)) return;
                 console.log(fancy(`🔁 [${sessionId}] reconnecting...`));
-                bootSocket(sessionId, session).catch(e =>
+                bootSocket(sessionId, session, useSessionCreds).catch(e =>
                     console.error(`[${sessionId}] reconnect failed:`, e.message)
                 );
             }, 5000);
@@ -448,9 +469,7 @@ async function bootSocket(sessionId, session) {
         if (!config.anticall) return;
         for (const call of calls) {
             if (call.status === "offer") {
-                try {
-                    await conn.rejectCall(call.id, call.from);
-                } catch {}
+                try { await conn.rejectCall(call.id, call.from); } catch {}
             }
         }
     });
@@ -468,17 +487,20 @@ async function logoutSession(sessionId) {
         global.sessions.delete(sessionId);
     }
 
-    try {
-        await initMongo();
-        const collection = global.mongoClient.db("insidious").collection("authState");
-        await collection.deleteMany({ _id: { $regex: `^${sessionId}:` } });
-        console.log(fancy(`🗑️ [${sessionId}] session data deleted`));
-    } catch (e) {
-        console.error(`[${sessionId}] cleanup error:`, e.message);
+    if (config.mongodb) {
+        try {
+            await initMongo();
+            const collection = global.mongoClient.db("insidious").collection("authState");
+            await collection.deleteMany({ _id: { $regex: `^${sessionId}:` } });
+            console.log(fancy(`🗑️ [${sessionId}] session data deleted`));
+        } catch (e) {
+            console.error(`[${sessionId}] cleanup error:`, e.message);
+        }
     }
 }
 
 async function resumeAllSessions() {
+    if (!config.mongodb) return;
     await initMongo();
     const collection = global.mongoClient.db("insidious").collection("authState");
     const metas = await collection.find({ _id: { $regex: ":meta$" } }).toArray();
@@ -490,21 +512,17 @@ async function resumeAllSessions() {
         if (global.sessions.has(sessionId)) continue;
 
         const session = {
-            conn: null,
-            socketReady: false,
-            pairing: null,
-            pairingNumber: null,
-            startedAt: Date.now(),
-            welcomed: false
+            conn: null, socketReady: false,
+            pairing: null, pairingNumber: null,
+            startedAt: Date.now(), welcomed: false
         };
         global.sessions.set(sessionId, session);
 
         try {
-            await bootSocket(sessionId, session);
+            await bootSocket(sessionId, session, false);
         } catch (e) {
             console.error(`Resume ${sessionId} failed:`, e.message);
         }
-
         await new Promise(r => setTimeout(r, 1500));
     }
 }
@@ -518,7 +536,7 @@ async function shutdown(sig) {
             s.conn?.ws?.close();
         }
         if (global.mongoClient) await global.mongoClient.close();
-        await mongoose.connection.close();
+        if (mongoose.connection.readyState === 1) await mongoose.connection.close();
     } catch (e) {
         console.error("Shutdown error:", e);
     }
@@ -533,17 +551,33 @@ process.on("unhandledRejection", (reason) => {
 
 // ---------------- BOOT ----------------
 (async () => {
-    console.log(fancy("🚀 Starting INSIDIOUS Bot..."));
+    console.log(fancy(`🚀 Starting ${config.botName || "INSIDIOUS"}...`));
 
     try {
-        await initMongo();
-        await resumeAllSessions();
+        if (SESSION_ID) {
+            // ---- SESSION_ID mode: single auto-connect ----
+            console.log(fancy("🔑 Using SESSION_ID mode"));
+            const session = {
+                conn: null, socketReady: false,
+                pairing: null, pairingNumber: null,
+                startedAt: Date.now(), welcomed: false
+            };
+            global.sessions.set("session_id", session);
+            await bootSocket("session_id", session, true);
+        } else if (config.mongodb) {
+            // ---- Multi-session mode ----
+            console.log(fancy("🔑 No SESSION_ID — using multi-session MongoDB mode"));
+            await resumeAllSessions();
+        } else {
+            console.error(fancy("❌ Neither SESSION_ID nor MONGODB_URI is set — cannot start."));
+            process.exit(1);
+        }
     } catch (err) {
         console.error("Boot error:", err);
     }
 
     app.listen(PORT, () => {
-        console.log(fancy(`🌐 Pairing UI: http://localhost:${PORT}`));
-        console.log(fancy(`📱 Mobile app: http://localhost:${PORT}/mobile`));
+        console.log(fancy(`🌐 Dashboard: http://localhost:${PORT}`));
+        console.log(fancy(`📱 Mobile:    http://localhost:${PORT}/mobile`));
     });
 })();
