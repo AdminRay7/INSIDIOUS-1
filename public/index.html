@@ -1,550 +1,242 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<meta name="theme-color" content="#0a0000">
-<title>INSIDIOUS | Pairing Panel</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👻</text></svg>">
-<style>
-    *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
-    html,body{height:100%}
-    body{
-        background:radial-gradient(circle at 30% 20%,#1a0000 0%,#0a0000 40%,#000 100%);
-        color:#eaeaea;
-        font-family:'Segoe UI',system-ui,-apple-system,sans-serif;
-        min-height:100vh;
-        display:flex;align-items:center;justify-content:center;
-        padding:20px;overflow-x:hidden;
-    }
-    body::before{
-        content:'';position:fixed;inset:0;pointer-events:none;
-        background:
-            radial-gradient(circle at 80% 90%,rgba(255,0,0,.12),transparent 50%),
-            radial-gradient(circle at 10% 80%,rgba(255,0,0,.08),transparent 40%);
-        animation:flicker 6s infinite alternate;
-    }
-    @keyframes flicker{0%,100%{opacity:.9}45%{opacity:.6}55%{opacity:1}}
-
-    .container{
-        position:relative;
-        background:rgba(10,0,0,.88);
-        backdrop-filter:blur(20px);
-        -webkit-backdrop-filter:blur(20px);
-        border:2px solid #ff2a2a;
-        box-shadow:0 0 30px #ff2a2a,inset 0 0 60px rgba(255,0,0,.05);
-        padding:34px 26px;
-        border-radius:18px;
-        max-width:460px;
-        width:100%;
-        z-index:2;
-        animation:fadeIn .6s ease;
-    }
-    @keyframes fadeIn{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
-    .container::before,.container::after{
-        content:'';position:absolute;width:22px;height:22px;
-        border:2px solid #ff2a2a;box-shadow:0 0 12px #ff2a2a;
-    }
-    .container::before{top:-2px;left:-2px;border-right:none;border-bottom:none;border-radius:18px 0 0 0}
-    .container::after{bottom:-2px;right:-2px;border-left:none;border-top:none;border-radius:0 0 18px 0}
-
-    .brand{text-align:center;margin-bottom:22px}
-    .brand .ghost{
-        font-size:44px;color:#ff2a2a;
-        text-shadow:0 0 24px #ff2a2a;
-        animation:pulse 2.5s infinite;
-        display:inline-block;
-    }
-    @keyframes pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.08);opacity:.85}}
-    .brand h1{
-        font-size:26px;letter-spacing:6px;
-        color:#fff;margin-top:10px;
-        text-shadow:0 0 20px rgba(255,42,42,.6);
-    }
-    .brand p{
-        color:#888;font-size:11px;letter-spacing:3px;
-        margin-top:6px;text-transform:uppercase;
-    }
-
-    .tabs{
-        display:flex;gap:8px;margin-bottom:20px;
-        background:rgba(255,42,42,.05);
-        padding:4px;border-radius:12px;
-        border:1px solid rgba(255,42,42,.2);
-    }
-    .tab{
-        flex:1;padding:10px;text-align:center;
-        border-radius:9px;cursor:pointer;
-        font-size:12px;font-weight:700;
-        letter-spacing:1px;text-transform:uppercase;
-        color:#888;transition:.2s;user-select:none;
-    }
-    .tab.active{
-        background:#ff2a2a;color:#000;
-        box-shadow:0 0 16px rgba(255,42,42,.5);
-    }
-
-    .step{display:none}
-    .step.active{display:block;animation:fadeIn .4s ease}
-
-    input{
-        width:100%;padding:15px;margin-bottom:12px;
-        background:#0a0000;
-        border:1px solid rgba(255,42,42,.4);
-        color:#fff;font-size:16px;
-        text-align:center;letter-spacing:2px;
-        border-radius:11px;outline:none;
-        transition:.2s;
-    }
-    input:focus{border-color:#ff2a2a;box-shadow:0 0 20px rgba(255,42,42,.4)}
-    input::placeholder{color:#555;letter-spacing:1px}
-
-    button{
-        background:#ff2a2a;color:#000;border:none;
-        padding:15px 20px;font-weight:800;
-        font-size:13px;letter-spacing:2px;
-        text-transform:uppercase;
-        border-radius:11px;cursor:pointer;
-        width:100%;transition:.25s;
-        display:flex;align-items:center;justify-content:center;gap:8px;
-    }
-    button:hover:not(:disabled){
-        background:#fff;box-shadow:0 0 24px rgba(255,255,255,.5);
-        transform:translateY(-2px);
-    }
-    button:active:not(:disabled){transform:translateY(0)}
-    button:disabled{opacity:.5;cursor:not-allowed;transform:none}
-    button.ghost{
-        background:transparent;
-        border:1px solid rgba(255,42,42,.5);
-        color:#ff7676;
-    }
-    button.ghost:hover:not(:disabled){
-        background:rgba(255,42,42,.1);
-        border-color:#ff2a2a;color:#ff7676;
-        box-shadow:none;transform:none;
-    }
-    .btn-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
-
-    .code-box{
-        font-size:34px;font-weight:800;
-        letter-spacing:9px;text-align:center;
-        color:#fff;background:#000;
-        padding:24px 12px;border-radius:14px;
-        border:1px dashed rgba(255,42,42,.7);
-        margin:18px 0;word-break:break-all;
-        text-shadow:0 0 24px rgba(255,42,42,.9);
-        cursor:pointer;transition:.2s;
-        position:relative;
-    }
-    .code-box:hover{border-color:#ff2a2a;box-shadow:0 0 20px rgba(255,42,42,.4)}
-    .code-box::after{
-        content:'TAP TO COPY';
-        position:absolute;bottom:6px;right:10px;
-        font-size:8px;letter-spacing:2px;color:#555;
-        font-weight:600;
-    }
-
-    .instructions{
-        background:rgba(255,42,42,.06);
-        border-left:3px solid #ff2a2a;
-        padding:14px 16px;border-radius:10px;
-        font-size:13px;color:#ccc;
-        line-height:1.75;margin-top:14px;
-        text-align:left;
-    }
-    .instructions b{color:#ff7676}
-
-    .status-line{
-        display:flex;align-items:center;justify-content:center;gap:8px;
-        font-size:12px;color:#888;letter-spacing:1px;
-        margin-top:14px;
-    }
-    .dot{
-        width:8px;height:8px;border-radius:50%;
-        background:#6fff9b;box-shadow:0 0 10px #6fff9b;
-        animation:blink 1.4s infinite;
-    }
-    @keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
-
-    .error-box{
-        color:#ff9999;font-size:12px;
-        text-align:center;padding:12px;
-        border-radius:10px;
-        background:rgba(255,42,42,.12);
-        border:1px solid rgba(255,42,42,.4);
-        margin-top:12px;display:none;
-        animation:shake .4s;
-    }
-    .error-box.show{display:block}
-    @keyframes shake{
-        0%,100%{transform:translateX(0)}
-        25%{transform:translateX(-6px)}
-        75%{transform:translateX(6px)}
-    }
-
-    .toast{
-        position:fixed;bottom:24px;left:50%;
-        transform:translateX(-50%) translateY(80px);
-        background:#ff2a2a;color:#000;
-        padding:12px 22px;border-radius:10px;
-        font-weight:700;font-size:13px;letter-spacing:1px;
-        box-shadow:0 0 24px rgba(255,42,42,.6);
-        transition:transform .3s ease;z-index:100;
-        pointer-events:none;max-width:90%;
-        text-align:center;
-    }
-    .toast.show{transform:translateX(-50%) translateY(0)}
-
-    .footer{
-        text-align:center;color:#555;
-        font-size:10px;letter-spacing:3px;
-        margin-top:26px;
-    }
-
-    /* QR container */
-    #qr-container{
-        background:#fff;padding:14px;border-radius:12px;
-        display:inline-block;margin:10px auto;
-    }
-    #qr-container canvas,#qr-container img{
-        display:block;width:220px;height:220px;
-    }
-
-    /* Loading skeleton */
-    .skeleton{
-        display:inline-block;
-        width:22px;height:22px;
-        border:2px solid rgba(0,0,0,.3);
-        border-top-color:#000;
-        border-radius:50%;
-        animation:spin .8s linear infinite;
-    }
-    @keyframes spin{to{transform:rotate(360deg)}}
-
-    /* History */
-    .history-list{max-height:220px;overflow-y:auto;margin-top:12px}
-    .history-item{
-        background:rgba(255,42,42,.05);
-        border:1px solid rgba(255,42,42,.2);
-        border-radius:10px;padding:10px 12px;
-        margin-bottom:8px;font-size:12px;
-        display:flex;justify-content:space-between;
-        align-items:center;gap:8px;
-    }
-    .history-item .num{color:#ff7676;font-weight:600}
-    .history-item .time{color:#555;font-size:10px}
-    .history-empty{
-        text-align:center;color:#555;
-        font-size:12px;padding:30px 10px;
-    }
-
-    @media(max-width:480px){
-        .container{padding:26px 18px;border-radius:14px}
-        .brand h1{font-size:20px;letter-spacing:4px}
-        .code-box{font-size:24px;letter-spacing:5px;padding:18px 10px}
-        button{font-size:12px;padding:14px 16px}
-        .tab{font-size:10px;padding:8px}
-    }
-</style>
-</head>
-<body>
-
-<div class="container">
-    <div class="brand">
-        <div class="ghost"><i class="fas fa-ghost"></i></div>
-        <h1>INSIDIOUS</h1>
-        <p>WhatsApp Pairing Panel</p>
-    </div>
-
-    <!-- TABS -->
-    <div class="tabs">
-        <div class="tab active" data-tab="pair">Pair</div>
-        <div class="tab" data-tab="qr">QR</div>
-        <div class="tab" data-tab="history">History</div>
-    </div>
-
-    <!-- TAB: PAIR -->
-    <div class="step active" id="step-pair">
-        <p style="font-size:13px;color:#ccc;text-align:center;margin-bottom:12px">
-            Enter phone number with country code
-        </p>
-        <input type="tel" id="phoneNum" placeholder="254712345678" inputmode="numeric" autocomplete="off" maxlength="15">
-        <button id="submitBtn"><i class="fas fa-key"></i> Generate Pairing Code</button>
-        <div class="error-box" id="err"></div>
-    </div>
-
-    <!-- TAB: QR -->
-    <div class="step" id="step-qr">
-        <p style="font-size:13px;color:#ccc;text-align:center;margin-bottom:12px">
-            Or scan the QR code in WhatsApp
-        </p>
-        <div style="text-align:center">
-            <div id="qr-container">
-                <img id="qrImg" alt="QR" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='80'%3E👻%3C/text%3E%3C/svg%3E">
-            </div>
-        </div>
-        <button class="ghost" id="refreshQrBtn" style="margin-top:14px">
-            <i class="fas fa-redo"></i> Refresh QR
-        </button>
-        <div class="instructions" style="margin-top:14px">
-            <b>HOW TO SCAN:</b><br>
-            1. Open WhatsApp → <b>Linked Devices</b><br>
-            2. Tap <b>Link a Device</b><br>
-            3. Scan the QR code above
-        </div>
-    </div>
-
-    <!-- TAB: HISTORY -->
-    <div class="step" id="step-history">
-        <p style="font-size:13px;color:#ccc;text-align:center;margin-bottom:12px">
-            Your recent pairings
-        </p>
-        <div class="history-list" id="historyList">
-            <div class="history-empty">
-                <i class="fas fa-inbox" style="font-size:24px;opacity:.3"></i>
-                <br><br>No pairing history yet
-            </div>
-        </div>
-        <button class="ghost" id="clearHistoryBtn" style="margin-top:10px">
-            <i class="fas fa-trash"></i> Clear History
-        </button>
-    </div>
-
-    <!-- RESULT (shown after pair) -->
-    <div class="step" id="step-result">
-        <p style="color:#7fff9f;font-size:13px;text-align:center;font-weight:600">
-            <i class="fas fa-check-circle"></i> CODE READY
-        </p>
-        <div class="code-box" id="codeDisplay" title="Tap to copy">----</div>
-
-        <div class="instructions">
-            <b>HOW TO PAIR:</b><br>
-            1. Open WhatsApp on your phone.<br>
-            2. Go to <b>Linked Devices</b>.<br>
-            3. Tap <b>Link with Phone Number</b>.<br>
-            4. Enter the 8-digit code shown above.
-        </div>
-
-        <div class="status-line">
-            <span class="dot"></span> Code active — enter it in WhatsApp
-        </div>
-
-        <div class="btn-row" style="margin-top:16px">
-            <button id="copyBtn"><i class="fas fa-copy"></i> Copy</button>
-            <button class="ghost" id="againBtn"><i class="fas fa-redo"></i> Again</button>
-        </div>
-    </div>
-
-    <div class="footer">DEVELOPED BY STANYTZ &copy; 2025</div>
-</div>
-
-<div class="toast" id="toast"></div>
-
-<script>
-// ============================================
-//   CONFIG
-// ============================================
-const PAIR_ENDPOINT = '/api/pair';       // change to '/pair' if your bot uses that
-const QR_ENDPOINT   = '/api/qr';         // optional — will fail gracefully if missing
-const HISTORY_KEY   = 'insidious_pair_history';
-
-// ============================================
-//   ELEMENTS
-// ============================================
-const tabs          = document.querySelectorAll('.tab');
-const stepPair      = document.getElementById('step-pair');
-const stepQr        = document.getElementById('step-qr');
-const stepHistory   = document.getElementById('step-history');
-const stepResult    = document.getElementById('step-result');
-const phoneNum      = document.getElementById('phoneNum');
-const submitBtn     = document.getElementById('submitBtn');
-const codeDisplay   = document.getElementById('codeDisplay');
-const errBox        = document.getElementById('err');
-const copyBtn       = document.getElementById('copyBtn');
-const againBtn      = document.getElementById('againBtn');
-const qrImg         = document.getElementById('qrImg');
-const refreshQrBtn  = document.getElementById('refreshQrBtn');
-const historyList   = document.getElementById('historyList');
-const clearHistoryBtn = document.getElementById('clearHistoryBtn');
-const toast         = document.getElementById('toast');
-
-// ============================================
-//   TOAST
-// ============================================
-let toastTimer;
-function showToast(msg, type = 'ok') {
-    toast.textContent = msg;
-    toast.style.background = type === 'err' ? '#ff2a2a' : '#6fff9b';
-    toast.style.color = '#000';
-    toast.classList.add('show');
-    clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => toast.classList.remove('show'), 2500);
-}
-
-// ============================================
-//   TAB SWITCHING
-// ============================================
-function showTab(name) {
-    tabs.forEach(t => t.classList.toggle('active', t.dataset.tab === name));
-    [stepPair, stepQr, stepHistory, stepResult].forEach(s => s.classList.remove('active'));
-    if (name === 'pair') stepPair.classList.add('active');
-    if (name === 'qr') { stepQr.classList.add('active'); loadQr(); }
-    if (name === 'history') { stepHistory.classList.add('active'); renderHistory(); }
-}
-
-tabs.forEach(t => t.onclick = () => showTab(t.dataset.tab));
-
-// ============================================
-//   PAIRING
-// ============================================
-submitBtn.onclick = async () => {
-    errBox.classList.remove('show');
-
-    const num = phoneNum.value.replace(/\D/g, '');
-    if (num.length < 10 || num.length > 15) {
-        errBox.innerText = 'Enter full number with country code (10–15 digits)';
-        errBox.classList.add('show');
-        return;
-    }
-
-    submitBtn.disabled = true;
-    submitBtn.innerHTML = '<span class="skeleton"></span> GENERATING...';
-
-    try {
-        const r = await fetch(`${PAIR_ENDPOINT}?num=${encodeURIComponent(num)}`, { cache: 'no-store' });
-        const text = await r.text();
-        let data;
-        try { data = JSON.parse(text); }
-        catch { throw new Error(`Server returned ${r.status} (not JSON)`); }
-
-        if (!r.ok || data.error) throw new Error(data.error || `Server error ${r.status}`);
-        if (!data.code) throw new Error('No pairing code returned');
-
-        // Show result tab
-        stepPair.classList.remove('active');
-        stepResult.classList.add('active');
-        codeDisplay.innerText = data.code;
-
-        // Save to history
-        saveToHistory(num, data.code);
-
-        showToast('Code generated!');
-
-    } catch (e) {
-        errBox.innerText = e.message;
-        errBox.classList.add('show');
-        submitBtn.disabled = false;
-        submitBtn.innerHTML = '<i class="fas fa-key"></i> Generate Pairing Code';
-    }
-};
-
-// ============================================
-//   COPY / AGAIN
-// ============================================
-codeDisplay.onclick = copyCode;
-copyBtn.onclick      = copyCode;
-
-function copyCode() {
-    const code = codeDisplay.innerText.replace(/-/g, '').trim();
-    if (!code || code === '----') return;
-    navigator.clipboard.writeText(code).then(() => {
-        showToast('Code copied!');
-    }).catch(() => {
-        // Fallback
-        const ta = document.createElement('textarea');
-        ta.value = code;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand('copy');
-        document.body.removeChild(ta);
-        showToast('Code copied!');
-    });
-}
-
-againBtn.onclick = () => {
-    stepResult.classList.remove('active');
-    stepPair.classList.add('active');
-    phoneNum.value = '';
-    submitBtn.disabled = false;
-    submitBtn.innerHTML = '<i class="fas fa-key"></i> Generate Pairing Code';
-    errBox.classList.remove('show');
-    phoneNum.focus();
-};
-
-// ============================================
-//   QR
-// ============================================
-async function loadQr() {
-    try {
-        const r = await fetch(QR_ENDPOINT, { cache: 'no-store' });
-        if (!r.ok) throw new Error('QR unavailable');
-        const data = await r.json();
-        if (data.qr) {
-            qrImg.src = data.qr.startsWith('data:') ? data.qr : `data:image/png;base64,${data.qr}`;
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>INSIDIOUS V2.1.1 | PAIRING PANEL</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        /* HORROR THEME STYLING */
+        body {
+            background: radial-gradient(circle, #1a0000 0%, #000000 100%);
+            color: #ff0000;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            overflow-x: hidden;
         }
-    } catch {
-        // QR not supported — leave default
-    }
-}
-refreshQrBtn.onclick = () => { loadQr(); showToast('QR refreshed'); };
 
-// ============================================
-//   HISTORY
-// ============================================
-function getHistory() {
-    try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); }
-    catch { return []; }
-}
-function saveToHistory(number, code) {
-    const h = getHistory();
-    h.unshift({ number, code, at: Date.now() });
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(h.slice(0, 20)));
-}
-function renderHistory() {
-    const h = getHistory();
-    if (!h.length) {
-        historyList.innerHTML = `
-            <div class="history-empty">
-                <i class="fas fa-inbox" style="font-size:24px;opacity:.3"></i>
-                <br><br>No pairing history yet
-            </div>`;
-        return;
-    }
-    historyList.innerHTML = h.map(item => `
-        <div class="history-item">
-            <span class="num">+${item.number}</span>
-            <span class="time">${new Date(item.at).toLocaleString()}</span>
+        .container {
+            background: rgba(10, 0, 0, 0.9);
+            border: 2px solid #ff0000;
+            box-shadow: 0 0 30px #ff0000;
+            padding: 40px;
+            border-radius: 15px;
+            max-width: 450px;
+            width: 90%;
+            text-align: center;
+            position: relative;
+        }
+
+        h1 {
+            font-size: 28px;
+            letter-spacing: 3px;
+            text-shadow: 2px 2px 10px #ff0000;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #ccc;
+            font-size: 14px;
+            margin-bottom: 30px;
+        }
+
+        input {
+            width: 100%;
+            padding: 15px;
+            margin-bottom: 20px;
+            background: #111;
+            border: 1px solid #ff0000;
+            color: #fff;
+            font-size: 18px;
+            text-align: center;
+            border-radius: 8px;
+            outline: none;
+            box-sizing: border-box;
+        }
+
+        input:focus {
+            box-shadow: 0 0 15px #ff0000;
+        }
+
+        button {
+            background: #ff0000;
+            color: #000;
+            border: none;
+            padding: 15px 30px;
+            font-weight: bold;
+            font-size: 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            width: 100%;
+            transition: 0.3s;
+            text-transform: uppercase;
+        }
+
+        button:hover {
+            background: #fff;
+            box-shadow: 0 0 20px #fff;
+        }
+
+        /* PAIRING CODE BOX */
+        #pair-container {
+            margin-top: 30px;
+            display: none;
+        }
+
+        #code-display {
+            font-size: 40px;
+            font-weight: bold;
+            letter-spacing: 10px;
+            background: #222;
+            padding: 20px;
+            border-radius: 10px;
+            color: #fff;
+            border: 1px dashed #ff0000;
+            margin: 20px 0;
+        }
+
+        /* INSTRUCTIONS */
+        .instructions {
+            text-align: left;
+            background: rgba(255, 0, 0, 0.1);
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #ddd;
+            margin-top: 20px;
+        }
+
+        .instructions b { color: #ff0000; }
+
+        /* SUCCESS STATUS */
+        #status-container {
+            display: none;
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            background: #004d00;
+            color: #fff;
+            border: 1px solid #00ff00;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0px #00ff00; }
+            50% { box-shadow: 0 0 20px #00ff00; }
+            100% { box-shadow: 0 0 0px #00ff00; }
+        }
+
+        .loading-dots:after {
+            content: '.';
+            animation: dots 1s steps(5, end) infinite;
+        }
+
+        @keyframes dots {
+            0%, 20% { content: '.'; }
+            40% { content: '..'; }
+            60% { content: '...'; }
+            80%, 100% { content: ''; }
+        }
+    </style>
+</head>
+<body oncontextmenu="return false;"> <!-- DISABLE RIGHT CLICK -->
+
+    <div class="container">
+        <h1><i class="fas fa-ghost"></i> INSIDIOUS V2</h1>
+        <div class="subtitle">THE LAST KEY | WHATSAPP AUTOMATION</div>
+
+        <div id="input-area">
+            <p style="font-size: 14px;">Enter phone number with country code</p>
+            <input type="number" id="phoneNum" placeholder="e.g 255712345678">
+            <button id="submitBtn">Generate Pairing Code</button>
         </div>
-    `).join('');
-}
-clearHistoryBtn.onclick = () => {
-    if (!confirm('Clear all pairing history?')) return;
-    localStorage.removeItem(HISTORY_KEY);
-    renderHistory();
-    showToast('History cleared');
-};
 
-// ============================================
-//   KEYBOARD
-// ============================================
-phoneNum.addEventListener('keydown', e => {
-    if (e.key === 'Enter') submitBtn.click();
-});
-document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') againBtn.click();
-    if (e.ctrlKey && e.key === 'c' && stepResult.classList.contains('active')) {
-        e.preventDefault();
-        copyCode();
-    }
-});
+        <!-- PAIRING CODE DISPLAY -->
+        <div id="pair-container">
+            <p>Your Link Code is Ready:</p>
+            <div id="code-display">--------</div>
+            
+            <div class="instructions">
+                <b>HOW TO PAIR:</b><br>
+                1. Open WhatsApp on your phone.<br>
+                2. Go to <b>Linked Devices</b> menu.<br>
+                3. Tap on <b>Link with Phone Number</b>.<br>
+                4. Enter the 8-digit code shown above.
+            </div>
+            <p style="font-size: 12px; margin-top: 15px;" class="loading-dots">Waiting for connection</p>
+        </div>
 
-// ============================================
-//   INIT
-// ============================================
-phoneNum.focus();
-console.log('%c INSIDIOUS ', 'background:#ff2a2a;color:#000;font-weight:bold;padding:4px 8px;border-radius:4px');
-</script>
+        <!-- SUCCESS MESSAGE -->
+        <div id="status-container">
+            <i class="fas fa-check-circle"></i> <br>
+            <b>CONNECTED SUCCESSFULLY!</b> <br>
+            <span id="connected-num"></span> <br>
+            <small>Insidious is now guarding your account.</small>
+        </div>
+
+        <p style="font-size: 10px; color: #444; margin-top: 30px;">DEVELOPED BY STANYTZ &copy; 2025</p>
+    </div>
+
+    <script>
+        const submitBtn = document.getElementById('submitBtn');
+        const phoneInput = document.getElementById('phoneNum');
+        const pairContainer = document.getElementById('pair-container');
+        const inputArea = document.getElementById('input-area');
+        const codeDisplay = document.getElementById('code-display');
+        const statusContainer = document.getElementById('status-container');
+        const connectedNum = document.getElementById('connected-num');
+
+        submitBtn.onclick = async () => {
+            const num = phoneInput.value;
+            if (!num || num.length < 10) {
+                alert("Please enter a valid number!");
+                return;
+            }
+
+            submitBtn.innerText = "GENERATING...";
+            submitBtn.disabled = true;
+
+            try {
+                const response = await fetch(`/pair?num=${num}`);
+                const data = await response.json();
+
+                if (data.code) {
+                    inputArea.style.display = "none";
+                    pairContainer.style.display = "block";
+                    codeDisplay.innerText = data.code;
+                    
+                    // Start checking for connection (Polling)
+                    checkConnection(num);
+                } else {
+                    alert("Error: " + (data.error || "Server Busy"));
+                    submitBtn.innerText = "Generate Pairing Code";
+                    submitBtn.disabled = false;
+                }
+            } catch (err) {
+                alert("Failed to connect to server.");
+                submitBtn.innerText = "Generate Pairing Code";
+                submitBtn.disabled = false;
+            }
+        };
+
+        // Simulating connection check (In real index.js, the bot will send a msg when linked)
+        function checkConnection(num) {
+            // This is a UI simulation. In production, 
+            // index.js will handle the actual WhatsApp connection.
+            // You can also use WebSockets for real status.
+            console.log("Monitoring connection for: " + num);
+        }
+
+        // Logic to disable keyboard shortcuts for Inspect Element
+        document.onkeydown = function(e) {
+            if (e.ctrlKey && (e.keyCode === 67 || e.keyCode === 86 || e.keyCode === 85 || e.keyCode === 73)) {
+                return false;
+            }
+        };
+    </script>
 </body>
 </html>
