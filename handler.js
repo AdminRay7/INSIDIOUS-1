@@ -48,10 +48,10 @@ function loadCommands() {
 
 loadCommands();
 
-// ---------------- BUTTON/INTERACTIVE ROUTER ----------------
+// ---------------- BUTTON / INTERACTIVE ROUTER ----------------
 /**
- * Look for any command module that exposes handleButton() or handleList()
- * and dispatch the interaction. Returns true if handled.
+ * Detects button/list/template replies and dispatches them to any command
+ * module that implements handleButton(). Returns true if a module handled it.
  */
 async function routeButtonInteraction(conn, msg, ctx) {
     const buttonId =
@@ -61,8 +61,6 @@ async function routeButtonInteraction(conn, msg, ctx) {
 
     if (!buttonId) return false;
 
-    // Try every registered command that has a handleButton method.
-    // We dedupe by module reference so we don't call it twice.
     const seen = new Set();
     for (const [, mod] of commandCache) {
         if (seen.has(mod)) continue;
@@ -125,10 +123,7 @@ module.exports = async (conn, m, userId = "default") => {
         };
 
         // ---------------- BUTTON / LIST REPLY ROUTING ----------------
-        // Any interactive message (buttons, template replies, list rows) is
-        // dispatched to command modules that implement handleButton().
-        // Must happen before command parsing so button IDs aren't mistaken
-        // for text commands.
+        // Runs before everything else so button IDs never get treated as text.
         if (await routeButtonInteraction(conn, msg, cmdCtx)) {
             return;
         }
@@ -196,7 +191,6 @@ module.exports = async (conn, m, userId = "default") => {
                         }).catch(() => {});
                     }
 
-                    // Forward to owner as audit log
                     if (config.ownerNumber && sender.split('@')[0] !== config.ownerNumber) {
                         try {
                             await conn.sendMessage(config.ownerNumber + '@s.whatsapp.net', {
@@ -289,7 +283,7 @@ module.exports = async (conn, m, userId = "default") => {
             const hasBug = bugPatterns.some(pattern => {
                 if (typeof pattern === 'string') return body.includes(pattern);
                 if (pattern instanceof RegExp) {
-                    pattern.lastIndex = 0; // reset /g state
+                    pattern.lastIndex = 0;
                     return pattern.test(body);
                 }
                 return false;
@@ -446,7 +440,7 @@ module.exports = async (conn, m, userId = "default") => {
 
             if (handler && typeof handler.execute === 'function') {
                 const timeoutPromise = new Promise((_, reject) => {
-                    setTimeout(() => reject(new Error('Command timeout')), 30000);
+                    setTimeout(() => reject(new Error('Command timeout')), 60000);
                 });
 
                 try {
